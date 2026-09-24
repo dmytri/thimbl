@@ -1,0 +1,22 @@
+{
+  "file-name": "error",
+  "indentation": "error",
+  "new-line-at-eof": ["error", "yes"],
+  "one-space-between-tags": "error",
+  "no-dupe-feature-names": "error",
+  "no-dupe-scenario-names": "error",
+  "no-duplicate-tags": "error",
+  "no-empty-file": "error",
+  "no-files-without-scenarios": "error",
+  "no-homogenous-tags": "error",
+  "no-multiple-empty-lines": "error",
+  "no-partially-commented-tag-lines": "error",
+  "no-scenario-outlines-without-examples": "error",
+  "no-superfluous-tags": "error",
+  "no-trailing-spaces": "error",
+  "no-unnamed-features": "error",
+  "no-unnamed-scenarios": "error",
+  "max-scenarios-per-file": "off",
+  "name-length": "warn",
+  "use-and": "warn"
+}

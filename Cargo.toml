@@ -6,5 +6,10 @@ edition = "2024"
 [dependencies]
 
 [dev-dependencies]
-cucumber = { version = "0.23.0", features = ["macros"] }
+cucumber = { version = "0.23.0", features = ["macros", "output-json"] }
 gherkin = "0.16.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+[[test]]
+name = "cucumber"
+harness = false

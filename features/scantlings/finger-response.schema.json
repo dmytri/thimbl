@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "finger response",
+  "description": "Mechanical shape of any RFC 1288 finger response produced by the thimbl server: zero or more lines, each terminated by CRLF.",
+  "type": "string",
+  "minLength": 0,
+  "allOf": [
+    {
+      "description": "Every non-terminal line ending is CRLF: the response either ends exactly at a CRLF boundary or is empty.",
+      "pattern": "(^$|^(.*\r\n)+$)"
+    }
+  ],
+  "$defs": {
+    "line": {
+      "type": "string",
+      "pattern": "^.*\r\n$"
+    }
+  }
+}
