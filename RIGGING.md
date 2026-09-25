@@ -39,3 +39,6 @@
 - outbound: github-push
 - ship: `git push origin main`
 - verify: `gh api repos/dmytri/thimbl/commits/main -q .sha`
+- outbound: github-release
+- ship: `cargo build --release && tar -czf thimbl-$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys;print(json.load(sys.stdin)["packages"][0]["version"])')-x86_64-linux-gnu.tar.gz -C target/release thimbl && gh release create v$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys;print(json.load(sys.stdin)["packages"][0]["version"])') thimbl-*.tar.gz --generate-notes`
+- verify: `gh api repos/dmytri/thimbl/releases/latest -q .assets[0].browser_download_url`
