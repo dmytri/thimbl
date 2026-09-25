@@ -6,7 +6,7 @@
 ## Directories
 - implementation: src
 - specs: features
-- verification: features/steps
+- verification: tests
 - assets: none
 - scantlings: features/scantlings
 ## Commands
@@ -26,12 +26,13 @@
 - default: @logic
 - sandbox: none
 - policy: default tier runs locally, no credentials
-- weather: none
+- weather: .wake/weather.json
 - runrecord: .wake/runrecord.jsonl
 ## Dependencies
 - policy: locked
-- dependency: @cucumber/cucumber
+- dependency: cucumber
 - dependency: gherkin
+- dependency: tokio
 - dependency: cargo-llvm-cov
 - dependency: gplint
 ## Outbound

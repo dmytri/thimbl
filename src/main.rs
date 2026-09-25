@@ -49,6 +49,7 @@ fn main() -> ExitCode {
     }
 }
 
+/// @planks("the finger server is started on port 0")
 /// Parses the optional `--port N` / `--port=N` argument. Defaults to 0 so
 /// the kernel picks a free port; the resolved port is printed at startup.
 fn port_from_args() -> Result<u16, String> {
@@ -69,6 +70,8 @@ fn port_from_args() -> Result<u16, String> {
     Ok(port)
 }
 
+/// @planks("the finger server is running on an ephemeral port")
+/// @planks("it contains the bound address and port")
 fn serve(port: u16) -> ExitCode {
     let finger = Arc::new(Finger::current());
     let listener = match TcpListener::bind((HOST, port)) {
@@ -94,6 +97,8 @@ fn serve(port: u16) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// @planks("a client connects and sends an empty query")
+/// @planks("the server closes the connection")
 fn handle_connection(mut stream: TcpStream, finger: &Finger) {
     let Ok(query) = read_query(&mut stream) else {
         return;
@@ -105,6 +110,7 @@ fn handle_connection(mut stream: TcpStream, finger: &Finger) {
     let _ = stream.write_all(reply.as_bytes());
 }
 
+/// @planks("a client connects and sends a query of 600 characters")
 /// Reads one query line, cut at the first LF with a single trailing CR
 /// stripped, tolerating clients that close without a terminator. Returns
 /// `None` when the line exceeds [`MAX_QUERY_BYTES`].
@@ -142,6 +148,8 @@ struct Finger {
 }
 
 impl Finger {
+    /// @planks("the finger server is running on an ephemeral port")
+    /// @planks-provisional("features/ServerLifecycle.feature:SIGTERM stops the server with a clean exit")
     fn current() -> Self {
         Self {
             identity: current_identity(),
@@ -149,6 +157,12 @@ impl Finger {
         }
     }
 
+    /// @planks("a client connects and sends the query {string}")
+    /// @planks("the response contains {string}")
+    /// @planks("a client connects and sends the user's login name")
+    /// @planks("a client connects and sends the user's real name")
+    /// @planks("the response contains the user's login and real name")
+    /// @planks("the response states that the user was not found")
     /// Answers one query line: the local card for an empty query or a
     /// match on login/real name, the forwarding refusal, or the no-match
     /// notice. `/W` is accepted and ignored.
@@ -165,11 +179,15 @@ impl Finger {
         }
     }
 
+    /// @planks("a client connects and sends the name {string}")
     fn matches_user(&self, target: &str) -> bool {
         self.identity.login.eq_ignore_ascii_case(target)
             || self.identity.real_name.eq_ignore_ascii_case(target)
     }
 
+    /// @planks("the response contains the login, real name, directory and shell")
+    /// @planks("the response contains (?:a|an) \"([^\"]+)\" line with the (.+)")
+    /// @planks("every line of the response ends with CRLF")
     /// The finger(1) long format: identity lines followed by the Project
     /// and Plan sections, read from `HOME` at call time.
     fn long_card(&self) -> String {
@@ -190,6 +208,11 @@ impl Finger {
         card
     }
 
+    /// @planks("the response contains a {string} section with {string}")
+    /// @planks("the response contains the project content {string}")
+    /// @planks("the response contains the plan content {string}")
+    /// @planks("the plan file content is changed to {string}")
+    /// @planks("the response does not contain {string}")
     /// Appends one named section: the live file content when present, the
     /// fixed notice otherwise.
     fn append_section(&self, card: &mut String, header: &str, file: &str, absent: &str) {
@@ -211,6 +234,7 @@ impl Finger {
     }
 }
 
+/// @planks("every line of the response ends with CRLF")
 /// Appends file content as CRLF-terminated lines: interior newlines are
 /// normalized to CRLF and the file's own trailing newline is not doubled
 /// into a blank line.
@@ -243,6 +267,7 @@ fn current_identity() -> Identity {
     })
 }
 
+/// @planks("the response contains the login, real name, directory and shell")
 /// Finds the invoking user's `/etc/passwd` line: by real uid when known,
 /// otherwise by login name. Returns `None` when no line matches.
 fn passwd_identity() -> Option<Identity> {

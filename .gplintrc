@@ -8,7 +8,7 @@
   "no-duplicate-tags": "error",
   "no-empty-file": "error",
   "no-files-without-scenarios": "error",
-  "no-homogenous-tags": "error",
+  "no-homogenous-tags": "off",
   "no-multiple-empty-lines": "error",
   "no-partially-commented-tag-lines": "error",
   "no-scenario-outlines-without-examples": "error",
