@@ -36,4 +36,6 @@
 - dependency: cargo-llvm-cov
 - dependency: gplint
 ## Outbound
-- outbound: none
+- outbound: github-push
+- ship: `git push origin main`
+- verify: `gh api repos/dmytri/thimbl/commits/main -q .sha`
