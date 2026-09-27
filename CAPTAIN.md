@@ -27,9 +27,9 @@ Binding behaviour lives in `.feature` specs and referenced `assets/**`. History 
 
 ## State and next
 
-- Voyage 5 IN FLIGHT 2026-09-27: idle-spin blocker from field report. Spec: "An idle server burns no CPU" in ServerRobustness.feature (<0.5 CPU-s over 2s idle window, /proc/<pid>/stat ticks). Watchbill watch1 = @logic sweep. v0.3.0 spins 100% of a core at idle (WouldBlock arm has no sleep); 0.1.0 idle-clean.
-- Field-report deployment caveats landed in README: binary outside $HOME, bind source outside masked home (system-unit NAMESPACE failure), files named .plan/.project.
-- Operator action named: mise pin back to 0.1.0 until voyage 5 ships; live service still 0.1.0, tunnel up.
-- Voyage 4 COMPLETE 2026-09-27: state-dir landed, commit b51396b, v0.3.0 pushed + released, artifact smoke-tested live. Card files ONLY $HOME/.local/share/thimbl, seed-once, live reads; fixed path pinned by contract scenario.
+- Voyage 5 COMPLETE 2026-09-27: idle-spin fixed (POLL_TICK 50ms sleep in WouldBlock arm, src/main.rs), commit e84d5cc, deck clean at rest. New spec scenario "An idle server burns no CPU" (<0.5 CPU-s over 2s, /proc/<pid>/stat ticks) pins it; 27/27 sweep green at deck hash a242035e. Origin 1 behind; v0.3.1 release pending operator call.
+- Field report 2026-09-27 (v0.3.0 tested): state-dir, protocol, logging, reap, EMFILE, SIGTERM all pass; idle 100% CPU was the one regression (fixed this voyage). Throughput re-test owed by tester: expect ~0% idle, accept latency <=50ms after idle tick.
+- Operator actions: mise pin currently 0.3.0 (spinning build) - do NOT restart until v0.3.1 released and pinned; live service still 0.1.0, tunnel up (qeyay-67-213-121-213.run.pinggy-free.link:42215).
+- Public-face flip (field recommendation, needs operator ruling + deployment caveats): thimbl public (one card, no enumeration), fingerd stays loopback-only on 79. Caveats now in README: binary outside $HOME, bind source outside masked home, .plan/.project names. Cage unit checked into repo = backlog candidate.
 - Harbour debts (next fitting-out-grade harbour): verification-conformance rule set; plank-inventory/step-usage slots (plank join currently a read); planted-red proof for the tier-tag arm of the watchbill conformance check; coverage re-measure (0% instrument).
 - Backlog: client finger (second pass), multi-user/global mode, per-query identity liveness (spec first). Content catalog declined until client exists.
