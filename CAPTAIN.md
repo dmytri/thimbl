@@ -27,6 +27,9 @@ Binding behaviour lives in `.feature` specs and referenced `assets/**`. History 
 
 ## State and next
 
-- Voyage 4 COMPLETE 2026-09-27: state-dir landed, commit b51396b, deck clean at rest, no watchbill. @logic sweep 26/26 green at deck hash c2ee3df5 (runrecord). Card files now ONLY $HOME/.local/share/thimbl, seed-once, live reads; new contract scenario pins the fixed path. Origin 1 behind (push pending operator).
+- Voyage 5 IN FLIGHT 2026-09-27: idle-spin blocker from field report. Spec: "An idle server burns no CPU" in ServerRobustness.feature (<0.5 CPU-s over 2s idle window, /proc/<pid>/stat ticks). Watchbill watch1 = @logic sweep. v0.3.0 spins 100% of a core at idle (WouldBlock arm has no sleep); 0.1.0 idle-clean.
+- Field-report deployment caveats landed in README: binary outside $HOME, bind source outside masked home (system-unit NAMESPACE failure), files named .plan/.project.
+- Operator action named: mise pin back to 0.1.0 until voyage 5 ships; live service still 0.1.0, tunnel up.
+- Voyage 4 COMPLETE 2026-09-27: state-dir landed, commit b51396b, v0.3.0 pushed + released, artifact smoke-tested live. Card files ONLY $HOME/.local/share/thimbl, seed-once, live reads; fixed path pinned by contract scenario.
 - Harbour debts (next fitting-out-grade harbour): verification-conformance rule set; plank-inventory/step-usage slots (plank join currently a read); planted-red proof for the tier-tag arm of the watchbill conformance check; coverage re-measure (0% instrument).
 - Backlog: client finger (second pass), multi-user/global mode, per-query identity liveness (spec first). Content catalog declined until client exists.

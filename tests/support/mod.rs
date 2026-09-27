@@ -117,6 +117,9 @@ pub struct FingerWorld {
     pub server_stderr: Arc<Mutex<String>>,
     /// Source files a conformance search found carrying the sought token.
     pub token_hits: Vec<String>,
+    /// Server CPU-seconds consumed over the idle window of the
+    /// no-CPU-burn scenario, captured by the `When` step.
+    pub idle_cpu_seconds: Option<f64>,
 }
 
 /// A running thimbl server process and the port it bound.

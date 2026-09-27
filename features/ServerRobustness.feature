@@ -16,6 +16,11 @@ Feature: Server robustness
     When another client queries the user's login name
     Then the other client receives the full card
 
+  Scenario: An idle server burns no CPU
+    Given the finger server is running on an ephemeral port
+    When no client connects for 2 seconds
+    Then the server process uses less than 0.5 CPU-seconds over that window
+
   Scenario: The accept loop survives file descriptor exhaustion
     Given the server process has a file descriptor limit of 64
     When 70 clients connect and stay silent

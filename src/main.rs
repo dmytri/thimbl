@@ -50,6 +50,11 @@ const BUSY_REPLY: &str = "finger: server busy, try again\r\n";
 /// window finds its connection closed by the server.
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long the accept loop sleeps between non-blocking accept retries
+/// when no client is waiting. Keeps the loop's SIGTERM checks well inside
+/// the one-second clean-exit bound while an idle server uses no CPU.
+const POLL_TICK: Duration = Duration::from_millis(50);
+
 /// How long the accept loop waits between retries while the process is out
 /// of file descriptors. The kernel keeps queueing connecting clients in the
 /// listen backlog meanwhile, so a client that arrives during exhaustion is
@@ -132,6 +137,8 @@ fn serve(port: u16) -> ExitCode {
     // A non-blocking accept returns immediately with `WouldBlock` when no
     // client is waiting: the loop then revisits the SIGTERM check every
     // tick instead of blocking inside accept until the next connection.
+    // The tick sleeps so an idle server does not spin a core between
+    // checks.
     let _ = listener.set_nonblocking(true);
     // Reserve one descriptor up front, while the table still has room: it
     // is spent during exhaustion so a queued client can be accepted and
@@ -150,7 +157,8 @@ fn serve(port: u16) -> ExitCode {
                 thread::spawn(move || handle_connection(stream, &finger, peer));
             }
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                // Poll tick: loop back to the SIGTERM check.
+                // Poll tick: sleep, then loop back to the SIGTERM check.
+                thread::sleep(POLL_TICK);
             }
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {
                 // Signal delivery raced the accept; loop back to the check.

@@ -841,6 +841,52 @@ fn output_names_refused_query(world: &mut FingerWorld) {
     );
 }
 
+/// Reads the server process's consumed CPU seconds from `/proc/<pid>/stat`.
+/// Fields 14 (utime) and 15 (stime) count clock ticks since process start;
+/// the `Number of clock ticks per second` value on this kernel converts
+/// them to seconds.
+fn server_cpu_seconds(world: &FingerWorld) -> f64 {
+    let pid = world.server.as_ref().expect("the server is running").pid();
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .expect("read the server process's /proc stat");
+    // The comm field may carry spaces inside parentheses, so parsing starts
+    // after its closing parenthesis.
+    let rest = match stat.split_once(") ") {
+        Some((_, rest)) => rest,
+        None => panic!("cannot parse the server process's /proc stat: {stat:?}"),
+    };
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    // After the parenthesised comm, field 3 is state, so utime and stime sit
+    // at indices 11 and 12 here.
+    let utime_ticks: u64 = fields[11]
+        .parse()
+        .expect("utime is a tick count in /proc stat");
+    let stime_ticks: u64 = fields[12]
+        .parse()
+        .expect("stime is a tick count in /proc stat");
+    let ticks_per_second = 100;
+    (utime_ticks + stime_ticks) as f64 / ticks_per_second as f64
+}
+
+#[when("no client connects for 2 seconds")]
+fn idle_window(world: &mut FingerWorld) {
+    let before = server_cpu_seconds(world);
+    thread::sleep(Duration::from_secs(2));
+    let after = server_cpu_seconds(world);
+    world.idle_cpu_seconds = Some(after - before);
+}
+
+#[then(expr = "the server process uses less than {float} CPU-seconds over that window")]
+fn idle_cpu_below(world: &mut FingerWorld, budget: f64) {
+    let used = world
+        .idle_cpu_seconds
+        .expect("the idle window was measured");
+    assert!(
+        used < budget,
+        "the server used {used} CPU-seconds over the 2s idle window; the budget is {budget}"
+    );
+}
+
 #[then("the server output contains the client address")]
 fn output_contains_client_address(world: &mut FingerWorld) {
     let log = world.stderr_text();

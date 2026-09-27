@@ -70,6 +70,20 @@ kernel. Run thimbl under whichever supervisor you prefer; both forms
 give the same view: the server sees its state directory and nothing
 else of the home.
 
+Two placement rules make the cage work:
+
+- Install the binary outside `$HOME` (for example
+  `/usr/local/bin/thimbl`): a masked home makes any binary that lives
+  under it unreachable to the supervisor.
+- The bind source must exist before the cage starts. A system unit
+  cannot bind a path that lives under the masked home; keep the real
+  state directory outside `$HOME` (for example `/srv/thimbl`) and bind
+  it onto the fixed path. In a caged deployment the fixed path is a
+  mount point; the files live wherever the bind source lives.
+
+The state files must be named `.plan` and `.project` even when the
+state directory itself lives elsewhere.
+
 ## Verifying the cage
 
 With the server running under the unit or the bubblewrap line:
