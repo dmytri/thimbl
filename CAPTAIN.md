@@ -12,16 +12,19 @@ Binding behaviour lives in `.feature` specs and referenced `assets/**`. History 
 - Robustness (voyage 2): 10s read timeout, EMFILE backoff + spare-fd BUSY refusal, per-connection stderr log, SIGTERM clean exit.
 - Multi-user/global option: later. Client finger: second pass. Neither specced.
 
-## State after harbour 2 + voyages 3 (2026-09-27)
+## Released
 
-- HEAD 4c0788e on origin/main. Harbour 2 plank corrections committed (4ee4f2e). Voyage 3 harness teardown committed (4c0788e): terminate() SIGTERM-first + 2s grace in tests/support.
-- KEY FINDING: the 193.9s weather did NOT reproduce. Coverage-instrumented runs serialise scenarios; plain broad wall was ~11s before AND after the fix. cucumber JSON per-scenario spans at default concurrency are queue-contaminated (spans rotate between runs). Only concurrency-1 runs give a true wall prior. terminate() kept anyway: correct bounded cleanup, SIGKILL only on expiry.
-- Deck clean, origin in sync. watchbill.json still present with 2 conformance targets: spent per QM (both green in broad), left unstruck per policy - Captain may withdraw or leave for next custody to strike.
-- Still owed at next fitting-out-grade harbour: verification-conformance rule set (plank-form + plank-coverage token-search rules); plank-inventory/step-usage slots still none.
-- Outbound candidate: v0.2.0 (robustness + planks + teardown). Ship line ready in RIGGING.md ## Outbound.
+- v0.2.0 (2026-09-27): robustness suite + plank corrections + harness teardown. Tag pushed, tarball verified live (downloaded, checksum match, binary ran and answered). HEAD 81692d3.
 
-## Open questions for the user
+## Measurement caveats (verified 2026-09-27)
 
-- Release v0.2.0? (offered)
-- Content catalog for 8 product-facing strings: declined for now (single consumer), revisit with the client.
-- Client finger and multi-user mode: backlogged, no specs.
+- The 193.9s weather did NOT reproduce: coverage-instrumented runs serialise scenarios. Plain broad wall ~11-13s.
+- cucumber JSON per-scenario spans at default concurrency (64) are queue-contaminated: the ~10s span rotates between scenarios across runs. Only concurrency-1 runs give a true wall prior.
+- Idle-reap scenario legitimately takes ~10s: it observes the product's 10s reaping window. Pinned behaviour, correct to be slow.
+
+## State and next
+
+- Deck clean, origin in sync. watchbill.json ABSENT (struck at v0.2.0 custody prep; deck at rest).
+- Still owed at next fitting-out-grade harbour: verification-conformance rule set (plank-form + plank-coverage token-search rules); plank-inventory/step-usage slots still none. Coverage instrument still reads 0% (child SIGKILL in some paths) - SIGTERM-first teardown improves it; re-measure next harbour.
+- Backlog: client finger (second pass), multi-user/global mode, per-query identity liveness (spec first). Content catalog declined until client exists.
+- Session reset requested: operator to start fresh context for next cycle; durable artifacts carry everything.
