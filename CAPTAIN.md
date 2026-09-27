@@ -27,6 +27,6 @@ Binding behaviour lives in `.feature` specs and referenced `assets/**`. History 
 
 ## State and next
 
-- Deck clean, origin in sync at eae21fb. Voyage 4 in flight: state-dir voyage. Durable artifacts written (features/FingerStateDir.feature, watchbill watch1 = @logic tier sweep, README rewritten); QM dispatched on base eae21fb.
-- Still owed at next fitting-out-grade harbour: verification-conformance rule set (plank-form + plank-coverage token-search rules); plank-inventory/step-usage slots still none. Coverage instrument still reads 0% (child SIGKILL in some paths) - SIGTERM-first teardown improves it; re-measure next harbour.
+- Voyage 4 COMPLETE 2026-09-27: state-dir landed, commit b51396b, deck clean at rest, no watchbill. @logic sweep 26/26 green at deck hash c2ee3df5 (runrecord). Card files now ONLY $HOME/.local/share/thimbl, seed-once, live reads; new contract scenario pins the fixed path. Origin 1 behind (push pending operator).
+- Harbour debts (next fitting-out-grade harbour): verification-conformance rule set; plank-inventory/step-usage slots (plank join currently a read); planted-red proof for the tier-tag arm of the watchbill conformance check; coverage re-measure (0% instrument).
 - Backlog: client finger (second pass), multi-user/global mode, per-query identity liveness (spec first). Content catalog declined until client exists.
