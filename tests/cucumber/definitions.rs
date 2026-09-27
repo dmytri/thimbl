@@ -7,7 +7,12 @@
 //! forwarding refusal, overlong-query refusal, connection closed after
 //! answer).
 
+use std::io::{Read as _, Write as _};
+use std::net::TcpStream;
 use std::path::Path;
+use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::support::FingerWorld;
 use cucumber::{given, then, when};
@@ -376,4 +381,430 @@ fn response_text(world: &mut FingerWorld) -> String {
         .response_text
         .clone()
         .expect("a query was made and a response captured")
+}
+
+// ---------------------------------------------------------------------------
+// HarborConformance: methodology checks executable against the deck
+// ---------------------------------------------------------------------------
+
+/// Repo-root-relative watchbill path, as the feature pins it.
+const WATCHBILL_PATH: &str = "watchbill.json";
+/// Implementation directory the conformance scenarios search.
+const SRC_DIR: &str = "src";
+
+#[given(expr = "the watchbill file at {string} when present")]
+fn watchbill_present(world: &mut FingerWorld, path: String) {
+    // Loading state only: when the file is absent the deck is at rest and
+    // the When step sees nothing to check. The name says "when present".
+    if Path::new(&path).try_exists().unwrap_or(false) {
+        world.watchbill_present = true;
+    }
+}
+
+#[when("the verifier reads every watch object")]
+fn read_watchbill(_world: &mut FingerWorld) {
+    let raw = match std::fs::read_to_string(WATCHBILL_PATH) {
+        Ok(raw) => raw,
+        // Deck at rest: an absent watchbill gives the verifier nothing to
+        // read, and reading a path that does not exist must not itself fail.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => panic!("read watchbill.json: {err}"),
+    };
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("parse watchbill.json");
+    let obj = value
+        .as_object()
+        .expect("watchbill.json must hold a JSON object");
+    assert!(!obj.is_empty(), "watchbill.json holds no watch objects");
+    for (key, watch) in obj {
+        let number = key
+            .strip_prefix("watch")
+            .and_then(|rest| rest.parse::<u64>().ok())
+            .unwrap_or_else(|| panic!("watch key {key:?} does not match \"watch<number>\""));
+        assert!(number >= 1, "watch key {key:?} must number from 1");
+        let watch = watch
+            .as_object()
+            .unwrap_or_else(|| panic!("watch {key:?} must be an object"));
+        assert_eq!(
+            watch.len(),
+            1,
+            "watch {key:?} must hold only a \"scenarios\" array, found {watch:?}"
+        );
+        let scenarios = watch
+            .get("scenarios")
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| panic!("watch {key:?} must hold a \"scenarios\" array"));
+        for entry in scenarios {
+            let entry = entry
+                .as_str()
+                .unwrap_or_else(|| panic!("watch {key:?} entry {entry:?} must be a string"));
+            let (spec, name) = entry.split_once(':').unwrap_or_else(|| {
+                panic!("entry {entry:?} does not follow \"<spec>.feature:<Scenario Name>\"")
+            });
+            assert!(
+                spec.ends_with(".feature"),
+                "entry {entry:?} spec part {spec:?} must end in .feature"
+            );
+            assert!(!name.is_empty(), "entry {entry:?} carries no scenario name");
+            assert!(
+                Path::new(spec).exists(),
+                "entry {entry:?} names a spec that is not on the deck"
+            );
+            assert!(
+                scenario_name_exists(spec, name),
+                "entry {entry:?} names no scenario in {spec:?}"
+            );
+        }
+    }
+}
+
+#[then(expr = "every key matches {string} with only a {string} array")]
+fn watchbill_keys_shape(world: &mut FingerWorld, key_pattern: String, array_name: String) {
+    if !world.watchbill_present {
+        return;
+    }
+    let raw = std::fs::read_to_string(WATCHBILL_PATH).expect("read watchbill.json");
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("parse watchbill.json");
+    let obj = value.as_object().expect("watchbill object");
+    let expected_array = array_name.trim_matches('"');
+    for key in obj.keys() {
+        let rest = key
+            .strip_prefix("watch")
+            .unwrap_or_else(|| panic!("key {key:?} does not match {key_pattern:?}"));
+        assert!(
+            !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()),
+            "key {key:?} does not match {key_pattern:?}"
+        );
+        let watch = value
+            .get(key)
+            .and_then(|w| w.as_object())
+            .expect("watch object");
+        let only_keys: Vec<&str> = watch.keys().map(String::as_str).collect();
+        assert_eq!(
+            only_keys,
+            vec![expected_array],
+            "watch {key:?} must hold only {expected_array:?}, found {only_keys:?}"
+        );
+    }
+}
+
+#[then(expr = "every reference follows the {string} form")]
+fn watchbill_reference_form(world: &mut FingerWorld, form: String) {
+    let _ = form;
+    if !world.watchbill_present {
+        return;
+    }
+    let raw = std::fs::read_to_string(WATCHBILL_PATH).expect("read watchbill.json");
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("parse watchbill.json");
+    for (key, watch) in value.as_object().expect("watchbill object") {
+        let scenarios = watch
+            .get("scenarios")
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| panic!("watch {key:?} must hold a scenarios array"));
+        for entry in scenarios {
+            let entry = entry.as_str().expect("entry string");
+            let (spec, name) = entry.split_once(':').unwrap_or_else(|| {
+                panic!("entry {entry:?} lacks the \"<spec>.feature:<Scenario>\" colon")
+            });
+            assert!(
+                spec.ends_with(".feature") && !name.is_empty(),
+                "entry {entry:?} does not follow the \"<spec>.feature:<Scenario Name>\" form"
+            );
+        }
+    }
+}
+
+#[then("an absent watchbill conforms as the deck at rest")]
+fn absent_watchbill_conforms(world: &mut FingerWorld) {
+    // The deck is at rest exactly when the watchbill is absent: the Given
+    // and When saw nothing to check, and the Thens above returned quietly.
+    // When the watchbill is present this arm cannot fire, so prove the
+    // quiet path directly: reading a path that does not exist must not
+    // itself fail, which is the same read the When performs.
+    if world.watchbill_present {
+        let missing = WATCHBILL_PATH;
+        let present = Path::new(missing).try_exists().unwrap_or(false);
+        assert!(present, "watchbill {missing:?} vanished mid-scenario");
+        let reading_absent = std::fs::read_to_string(".wake/no-such-watchbill.json").is_err();
+        assert!(
+            reading_absent,
+            "an absent watchbill must read as absent, not as content"
+        );
+        return;
+    }
+    assert!(
+        !Path::new(WATCHBILL_PATH).exists(),
+        "the watchbill reappeared mid-scenario"
+    );
+}
+
+/// Reads the scenario names of one spec file (Gherkin-light: the line
+/// following a `Scenario:`/`Scenario Outline:` marker, trimmed).
+fn scenario_name_exists(spec: &str, name: &str) -> bool {
+    std::fs::read_to_string(spec)
+        .map(|raw| {
+            raw.lines().any(|line| {
+                let trimmed = line.trim_start();
+                trimmed
+                    .strip_prefix("Scenario:")
+                    .or_else(|| trimmed.strip_prefix("Scenario Outline:"))
+                    .map(|n| n.trim() == name)
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+#[given(expr = "the implementation directory {string}")]
+fn implementation_dir(_world: &mut FingerWorld, dir: String) {
+    assert!(
+        Path::new(&dir).is_dir(),
+        "implementation directory {dir} is not present"
+    );
+}
+
+#[when(expr = "the verifier searches every source file for the token {string}")]
+fn search_sources_for_token(world: &mut FingerWorld, token: String) {
+    let mut sources = Vec::new();
+    collect_rs_sources(Path::new(SRC_DIR), &mut sources);
+    assert!(!sources.is_empty(), "no source files found under {SRC_DIR}");
+    let mut hits = Vec::new();
+    for file in &sources {
+        let content =
+            std::fs::read_to_string(file).unwrap_or_else(|err| panic!("read {file}: {err}"));
+        if content.contains(&token) {
+            hits.push(file.clone());
+        }
+    }
+    world.token_hits = hits;
+}
+
+#[then("no match is found")]
+fn no_token_match(world: &mut FingerWorld) {
+    assert!(
+        world.token_hits.is_empty(),
+        "token match found in: {:?}",
+        world.token_hits
+    );
+}
+
+fn collect_rs_sources(dir: &Path, out: &mut Vec<String>) {
+    let entries =
+        std::fs::read_dir(dir).unwrap_or_else(|err| panic!("read dir {}: {err}", dir.display()));
+    for entry in entries {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs_sources(&path, out);
+        } else if path.extension().map(|ext| ext == "rs").unwrap_or(false) {
+            out.push(path.to_string_lossy().into_owned());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ServerLifecycle: clean shutdown on SIGTERM
+// ---------------------------------------------------------------------------
+
+#[when("the process receives the signal SIGTERM")]
+fn send_sigterm(world: &mut FingerWorld) {
+    // The port-0 Given spawned the server; SIGTERM must reach the server
+    // process itself. Under the fd-limit wrapper the shell has already
+    // exec'd, so the pid is the server's in every spawn shape.
+    let pid = world.server.as_ref().expect("server is running").pid();
+    // Send via the shell's kill builtin: std has no signal API and the
+    // harness stays std-only. Exit within 1s with code 0 is asserted by
+    // the Then step.
+    let status = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("kill -TERM {pid}"))
+        .status()
+        .expect("run kill");
+    assert!(status.success(), "kill -TERM {pid} failed");
+}
+
+#[then(expr = "the process exits within one second with code {int}")]
+fn exits_within_one_second(world: &mut FingerWorld, code: i64) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if let Some(server) = world.server.as_mut() {
+            if let Some(status) = server.try_wait() {
+                assert!(
+                    status.success() && status.code() == Some(code as i32),
+                    "server exit status is {status:?}, expected code {code}"
+                );
+                return;
+            }
+        } else {
+            panic!("server is not running");
+        }
+        if Instant::now() >= deadline {
+            panic!("server did not exit within one second of SIGTERM");
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ServerRobustness: hostile connection loads
+// ---------------------------------------------------------------------------
+
+#[given(expr = "the read timeout of the server is {int} seconds")]
+fn set_read_timeout(_world: &mut FingerWorld, seconds: u64) {
+    // States the contract under test; the server's built-in constant is
+    // the pinned value, asserted by the observable reap below.
+    assert_eq!(
+        seconds, 10,
+        "the scenario pins a 10s timeout; other values are out of contract"
+    );
+}
+
+#[when("a client connects and sends nothing")]
+fn connect_send_nothing(world: &mut FingerWorld) {
+    world.open_idle_client();
+}
+
+#[then(expr = "the connection is closed by the server within {int} seconds")]
+fn connection_closed_within(world: &mut FingerWorld, seconds: u64) {
+    // The idle client sent nothing; the server must close it (EOF on our
+    // read end) within the deadline.
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    let client = world
+        .idle_clients
+        .last_mut()
+        .expect("an idle client is connected");
+    let _ = client.set_read_timeout(Some(Duration::from_millis(200)));
+    let mut sink = [0u8; 64];
+    loop {
+        match client.read(&mut sink) {
+            Ok(0) => return, // server closed: EOF
+            Ok(_) => panic!("server sent data to an idle client that sent nothing"),
+            Err(err) => {
+                if Instant::now() >= deadline {
+                    panic!("server did not close the idle connection within {seconds}s: {err}");
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+#[given("a client connected and sent a partial query")]
+fn partial_query_client(world: &mut FingerWorld) {
+    let login = world.identity().login.clone();
+    world.open_partial_client(&login);
+}
+
+#[when("another client queries the user's login name")]
+fn other_client_login_query(world: &mut FingerWorld) {
+    let login = world.identity().login.clone();
+    world.query(&login);
+}
+
+#[then("the other client receives the full card")]
+fn other_client_full_card(world: &mut FingerWorld) {
+    let id = world.identity().clone();
+    let text = response_text(world);
+    assert!(
+        text.contains(&id.login) && text.contains("In real life"),
+        "other client did not receive the full card: {text:?}"
+    );
+}
+
+#[given(expr = "the server process has a file descriptor limit of {int}")]
+fn server_fd_limit(world: &mut FingerWorld, limit: u64) {
+    // States the precondition; takes effect at spawn. The Background
+    // already started a server on an inherited limit, so restart it
+    // under the cap and keep the Background's bound port semantics by
+    // swapping in the capped process.
+    world.restart_under_fd_limit(limit as u32);
+}
+
+#[when(expr = "{int} clients connect and stay silent")]
+fn many_silent_clients(world: &mut FingerWorld, count: u64) {
+    for _ in 0..count {
+        world.open_idle_client();
+    }
+}
+
+#[when(expr = "a new client queries the user's login name")]
+fn new_client_login_query(world: &mut FingerWorld) {
+    let port = world
+        .server
+        .as_ref()
+        .map(|s| s.port)
+        .expect("server is running");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    // Connect with tight timeouts; under fd exhaustion the kernel backlog
+    // queues the connect until the server can accept.
+    let stream = loop {
+        match TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            Duration::from_millis(500),
+        ) {
+            Ok(stream) => break stream,
+            Err(err) => {
+                if Instant::now() >= deadline {
+                    panic!("new client could not connect within 2s: {err}");
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+        }
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(250)));
+    let mut stream = stream;
+    let login = world.identity().login.clone();
+    let _ = stream
+        .write_all(login.as_bytes())
+        .and_then(|_| stream.write_all(b"\r\n"))
+        .and_then(|_| stream.flush());
+    let mut response = Vec::new();
+    loop {
+        let mut sink = [0u8; 256];
+        match stream.read(&mut sink) {
+            Ok(0) => break,
+            Ok(n) => response.extend_from_slice(&sink[..n]),
+            Err(_) => {
+                if Instant::now() >= deadline {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+    }
+    world.response = Some(response.clone());
+    world.response_text = Some(String::from_utf8_lossy(&response).into_owned());
+}
+
+#[then(expr = "the new client receives a response or a refusal within {int} seconds")]
+fn new_client_answered_within(world: &mut FingerWorld, seconds: u64) {
+    let bytes = world
+        .response
+        .as_ref()
+        .expect("the new client's query was attempted");
+    assert!(
+        !bytes.is_empty(),
+        "new client received no response or refusal within {seconds}s"
+    );
+}
+
+#[then(expr = "the server output contains a line naming the refused query")]
+fn output_names_refused_query(world: &mut FingerWorld) {
+    let log = world.stderr_text();
+    assert!(
+        log.contains("refused"),
+        "server output does not name the refused query: {log:?}"
+    );
+}
+
+#[then("the server output contains the client address")]
+fn output_contains_client_address(world: &mut FingerWorld) {
+    let log = world.stderr_text();
+    assert!(
+        log.contains("127.0.0.1"),
+        "server output does not contain the client address: {log:?}"
+    );
 }

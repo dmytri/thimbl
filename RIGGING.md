@@ -32,7 +32,9 @@
 - policy: locked
 - dependency: cucumber
 - dependency: gherkin
+- dependency: serde_json
 - dependency: tokio
+- dependency: signal-hook
 - dependency: cargo-llvm-cov
 - dependency: gplint
 ## Outbound

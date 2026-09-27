@@ -7,7 +7,9 @@
 //! * fixtures — a temp `HOME` containing `.project`/`.plan` files the
 //!   scenarios can create, edit and delete;
 //! * lifecycle — one server process per scenario (started on an ephemeral
-//!   port or on port 0), plus a raw TCP client for queries.
+//!   port or on port 0, optionally under an `ulimit -n` file-descriptor
+//!   cap), plus a raw TCP client for queries and pool-driven client
+//!   swarms for the robustness scenarios.
 
 pub mod evidence;
 
@@ -15,10 +17,15 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 /// Stops the server and removes the temp HOME. Registered as an After hook.
 pub fn shutdown(world: &mut FingerWorld) {
+    world.idle_clients.clear();
+    world.partial_client = None;
+    world.watchbill_present = false;
     if let Some(server) = world.server.as_mut() {
         server.kill();
     }
@@ -95,6 +102,17 @@ pub struct FingerWorld {
     pub startup_line: Option<String>,
     pub response: Option<Vec<u8>>,
     pub response_text: Option<String>,
+    /// Idle clients pinned open against the server (fd-exhaustion, idle-reap
+    /// reaping is observed on these).
+    pub idle_clients: Vec<TcpStream>,
+    /// A client holding a partially sent query open (slow-client scenario).
+    pub partial_client: Option<TcpStream>,
+    /// Whether the watchbill shape check found watchbill.json on the deck.
+    pub watchbill_present: bool,
+    /// Server stderr captured in a background thread (logging scenario).
+    pub server_stderr: Arc<Mutex<String>>,
+    /// Source files a conformance search found carrying the sought token.
+    pub token_hits: Vec<String>,
 }
 
 /// A running thimbl server process and the port it bound.
@@ -108,6 +126,16 @@ impl ServerHandle {
     pub fn kill(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+
+    /// The server process id, for signal delivery by the harness.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Non-blocking exit check: `Some(status)` once the server is gone.
+    pub fn try_wait(&mut self) -> Option<std::process::ExitStatus> {
+        self.child.try_wait().expect("try_wait server")
     }
 }
 
@@ -172,7 +200,15 @@ impl FingerWorld {
     /// Starts the thimbl server with the temp HOME and waits until it
     /// prints its bound address. `port_arg` is `None` for the default
     /// (ephemeral port) startup or `Some("0")` for the port-0 variant.
+    /// `fd_limit` caps the process file descriptors (`ulimit -n`) when
+    /// `Some`; `None` inherits the harness limit.
     pub fn start_server(&mut self, port_arg: Option<&str>) -> u16 {
+        self.start_server_opts(port_arg, None)
+    }
+
+    /// `start_server` with an optional file-descriptor limit for the
+    /// server process.
+    pub fn start_server_opts(&mut self, port_arg: Option<&str>, fd_limit: Option<u32>) -> u16 {
         if let Some(server) = &self.server {
             return server.port;
         }
@@ -182,8 +218,37 @@ impl FingerWorld {
         if let Some(port) = port_arg {
             cmd.arg("--port").arg(port);
         }
+        if let Some(limit) = fd_limit {
+            // Spawn through a shell that first clamps the descriptor limit
+            // and then execs the server, so the shell's pid becomes the
+            // server's pid and signals reach the server directly.
+            let binary = server_binary();
+            let mut script = format!("ulimit -n {limit} && exec {:?}", binary);
+            if let Some(port) = port_arg {
+                script.push_str(&format!(" --port {port}"));
+            }
+            cmd = Command::new("/bin/sh");
+            cmd.arg("-c").arg(script);
+            cmd.env("HOME", &home);
+        }
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = cmd.spawn().expect("spawn thimbl server");
+        let stderr_pipe = child.stderr.take().expect("server stderr piped");
+        let stderr_log = Arc::clone(&self.server_stderr);
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr_pipe);
+            for line in reader.lines() {
+                match line {
+                    Ok(line) => {
+                        if let Ok(mut log) = stderr_log.lock() {
+                            log.push_str(&line);
+                            log.push('\n');
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
         let mut stdout = BufReader::new(child.stdout.take().expect("server stdout piped"));
         let mut startup_line = String::new();
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -246,6 +311,56 @@ impl FingerWorld {
         let _ = stream.read_to_end(&mut response);
         self.response_text = Some(String::from_utf8_lossy(&response).into_owned());
         self.response = Some(response);
+    }
+
+    /// Opens a raw TCP connection to the server and keeps it open,
+    /// registering it in the world for teardown.
+    pub fn open_idle_client(&mut self) {
+        let port = self
+            .server
+            .as_ref()
+            .map(|s| s.port)
+            .expect("server is running");
+        let stream = TcpStream::connect(("127.0.0.1", port)).expect("connect idle client");
+        self.idle_clients.push(stream);
+    }
+
+    /// Opens a raw TCP connection and sends a partial query (no CRLF),
+    /// leaving it open: the slow client of the slow-client scenario.
+    pub fn open_partial_client(&mut self, partial: &str) {
+        let port = self
+            .server
+            .as_ref()
+            .map(|s| s.port)
+            .expect("server is running");
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect partial client");
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("set write timeout");
+        stream
+            .write_all(partial.as_bytes())
+            .expect("send partial query");
+        stream.flush().expect("flush partial query");
+        self.partial_client = Some(stream);
+    }
+
+    /// Snapshot of the server's captured stderr.
+    pub fn stderr_text(&self) -> String {
+        self.server_stderr
+            .lock()
+            .map(|log| log.clone())
+            .unwrap_or_default()
+    }
+
+    /// Stops the running server and starts a fresh one under the given
+    /// `ulimit -n` cap, keeping the same temp HOME.
+    pub fn restart_under_fd_limit(&mut self, limit: u32) {
+        if let Some(server) = self.server.as_mut() {
+            server.kill();
+        }
+        self.server = None;
+        self.startup_line = None;
+        self.start_server_opts(None, Some(limit));
     }
 }
 

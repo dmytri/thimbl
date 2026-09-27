@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+signal-hook = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 cucumber = { version = "0.23.0", features = ["macros", "output-json"] }
 gherkin = "0.16.0"
+serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 [[test]]

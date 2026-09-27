@@ -23,11 +23,13 @@
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::thread;
+use std::time::Duration;
 
 /// Largest accepted query line, in bytes, excluding the CRLF terminator.
 const MAX_QUERY_BYTES: usize = 512;
@@ -35,8 +37,26 @@ const MAX_QUERY_BYTES: usize = 512;
 /// RFC 1288 line terminator used for every response line.
 const CRLF: &str = "\r\n";
 
+/// Sent to a client accepted from the backlog while the server is out of
+/// file descriptors; the connection is closed right after.
+const BUSY_REPLY: &str = "finger: server busy, try again\r\n";
+
+/// Idle connections are reaped: a client that sends nothing within this
+/// window finds its connection closed by the server.
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long the accept loop waits between retries while the process is out
+/// of file descriptors. The kernel keeps queueing connecting clients in the
+/// listen backlog meanwhile, so a client that arrives during exhaustion is
+/// answered as soon as one descriptor frees.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+
 /// The server listens on loopback only; this is a single-user service.
 const HOST: &str = "127.0.0.1";
+
+/// Set by the SIGTERM handler; the accept loop observes it and shuts the
+/// server down cleanly. Only an atomic store runs inside the signal handler.
+static TERMINATED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
 
 fn main() -> ExitCode {
     match port_from_args() {
@@ -47,6 +67,16 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// @planks("the process receives the signal SIGTERM")
+/// Arms the SIGTERM handler before any connection thread exists. The
+/// handler only flips an atomic flag (the one async-signal-safe thing it
+/// needs to do); the accept loop wakes from its listener timeout, sees the
+/// flag, and `serve` returns a clean success exit.
+fn install_sigterm_handler() -> io::Result<()> {
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&TERMINATED))?;
+    Ok(())
 }
 
 /// @planks("the finger server is started on port 0")
@@ -72,7 +102,10 @@ fn port_from_args() -> Result<u16, String> {
 
 /// @planks("the finger server is running on an ephemeral port")
 /// @planks("it contains the bound address and port")
+/// @planks("features/ServerLifecycle.feature:SIGTERM stops the server with a clean exit")
 fn serve(port: u16) -> ExitCode {
+    install_sigterm_handler()
+        .unwrap_or_else(|err| eprintln!("thimbl: cannot arm SIGTERM handler: {err}"));
     let finger = Arc::new(Finger::current());
     let listener = match TcpListener::bind((HOST, port)) {
         Ok(listener) => listener,
@@ -90,24 +123,116 @@ fn serve(port: u16) -> ExitCode {
     };
     println!("listening on {bound}");
     let _ = io::stdout().flush();
-    for stream in listener.incoming().flatten() {
-        let finger = Arc::clone(&finger);
-        thread::spawn(move || handle_connection(stream, &finger));
+    // A non-blocking accept returns immediately with `WouldBlock` when no
+    // client is waiting: the loop then revisits the SIGTERM check every
+    // tick instead of blocking inside accept until the next connection.
+    let _ = listener.set_nonblocking(true);
+    // Reserve one descriptor up front, while the table still has room: it
+    // is spent during exhaustion so a queued client can be accepted and
+    // refused immediately instead of hanging until a descriptor frees.
+    let mut spare = listener.try_clone().ok();
+    let mut exhaust_flood = false;
+    while !TERMINATED.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((stream, peer)) => {
+                // The accepted stream inherits O_NONBLOCK; restore blocking
+                // mode so the per-connection read timeout governs reads.
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+                exhaust_flood = false;
+                let finger = Arc::clone(&finger);
+                thread::spawn(move || handle_connection(stream, &finger, peer));
+            }
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                // Poll tick: loop back to the SIGTERM check.
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+                // Signal delivery raced the accept; loop back to the check.
+            }
+            Err(err) => {
+                // Out of file descriptors (EMFILE/ENFILE) or similar. The
+                // listen backlog still queues connecting clients, so drain
+                // the queue by spending the reserved descriptor: a queued
+                // client is accepted and refused immediately instead of
+                // hanging until some fd happens to free.
+                if !exhaust_flood {
+                    eprintln!("thimbl: accept failed: {err}; refusing new clients while busy");
+                    exhaust_flood = true;
+                }
+                if !refuse_one_backlogged(&listener, spare.take()) {
+                    // Nothing in the backlog (or the spare was already
+                    // spent): back off so the table can drain.
+                    thread::sleep(ACCEPT_BACKOFF);
+                }
+                spare = listener.try_clone().ok();
+            }
+        }
     }
     ExitCode::SUCCESS
 }
 
+/// @planks("the new client receives a response or a refusal within {int} seconds")
+/// @planks("The accept loop survives file descriptor exhaustion")
+/// Serves one client that is stuck in the listen backlog while the
+/// descriptor table is full: spends the pre-reserved duplicate of the
+/// listening socket's descriptor, accepts the queued client, sends the
+/// busy refusal and closes. Returns `false` when no spare was held or no
+/// client was queued, so the caller can back off instead.
+fn refuse_one_backlogged(listener: &TcpListener, spare: Option<TcpListener>) -> bool {
+    let Some(spare) = spare else {
+        return false;
+    };
+    // Release the reserved descriptor first: accept needs a free slot to
+    // create the connection's descriptor in.
+    drop(spare);
+    match listener.accept() {
+        Ok((mut stream, peer)) => {
+            let _ = stream.set_nonblocking(false);
+            let _ = stream.set_write_timeout(Some(ACCEPT_BACKOFF));
+            let _ = stream.write_all(BUSY_REPLY.as_bytes());
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            eprintln!("thimbl: {peer} refused: server busy");
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// @planks("a client connects and sends an empty query")
 /// @planks("the server closes the connection")
-fn handle_connection(mut stream: TcpStream, finger: &Finger) {
-    let Ok(query) = read_query(&mut stream) else {
-        return;
-    };
-    let reply = match query {
-        Some(line) => finger.answer(&line),
-        None => format!("finger: query too long{CRLF}"),
-    };
-    let _ = stream.write_all(reply.as_bytes());
+/// @planks("the connection is closed by the server within {int} seconds")
+/// @planks("the server output contains a line naming the refused query")
+/// @planks("the server output contains the client address")
+/// Serves one connection: reads the query under the read timeout (a silent
+/// client is reaped when it expires), answers, and logs one stderr line
+/// naming the client address and the disposition.
+fn handle_connection(mut stream: TcpStream, finger: &Finger, peer: SocketAddr) {
+    // Reap silent clients: with the timeout set, the read loop fails with
+    // `WouldBlock` after the window and the connection is dropped.
+    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+    match read_query(&mut stream) {
+        Err(_) => {
+            // Read error or the read timeout: the connection is closed
+            // without an answer; the timeout case is the reaping above.
+            eprintln!("thimbl: {peer} connection lost before a query");
+        }
+        Ok(None) => {
+            let _ = stream.write_all(format!("finger: query too long{CRLF}").as_bytes());
+            eprintln!("thimbl: {peer} refused");
+        }
+        Ok(Some(line)) => {
+            let reply = finger.answer(&line);
+            let disposition = if reply.contains("forwarding service denied") {
+                "refused"
+            } else if reply.contains("no such user") {
+                "no-match"
+            } else {
+                "answered"
+            };
+            let _ = stream.write_all(reply.as_bytes());
+            eprintln!("thimbl: {peer} {disposition}");
+        }
+    }
 }
 
 /// @planks("a client connects and sends a query of 600 characters")
@@ -149,7 +274,7 @@ struct Finger {
 
 impl Finger {
     /// @planks("the finger server is running on an ephemeral port")
-    /// @planks-provisional("features/ServerLifecycle.feature:SIGTERM stops the server with a clean exit")
+    /// @planks("the finger server is started on port 0")
     fn current() -> Self {
         Self {
             identity: current_identity(),
