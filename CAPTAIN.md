@@ -24,7 +24,7 @@ Binding behaviour lives in `.feature` specs and referenced `assets/**`. History 
 
 ## State and next
 
-- Deck clean, origin in sync. watchbill.json ABSENT (struck at v0.2.0 custody prep; deck at rest).
+- Deck clean, ahead of origin/main by 1 (9f33e93 watchbill strike). Prior "struck at v0.2.0 custody prep" was wrong: watchbill.json stayed tracked and present from voyage 3 (4c0788e) through v0.2.0. Struck 2026-09-27 at voyage 4 open, post-reset, after confirming spent (hand-off report + runrecord pass at the v0.2.0 deck state).
 - Still owed at next fitting-out-grade harbour: verification-conformance rule set (plank-form + plank-coverage token-search rules); plank-inventory/step-usage slots still none. Coverage instrument still reads 0% (child SIGKILL in some paths) - SIGTERM-first teardown improves it; re-measure next harbour.
 - Backlog: client finger (second pass), multi-user/global mode, per-query identity liveness (spec first). Content catalog declined until client exists.
-- Session reset requested: operator to start fresh context for next cycle; durable artifacts carry everything.
+- Session reset consumed 2026-09-27: this fresh context is the post-reset cycle.
