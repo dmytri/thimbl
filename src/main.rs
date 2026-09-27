@@ -100,9 +100,9 @@ fn port_from_args() -> Result<u16, String> {
     Ok(port)
 }
 
-/// @planks("the finger server is running on an ephemeral port")
-/// @planks("it contains the bound address and port")
-/// @planks("features/ServerLifecycle.feature:SIGTERM stops the server with a clean exit")
+/// @planks("the finger server is started on port 0")
+/// @planks("the process receives the signal SIGTERM")
+/// @planks("the process exits within one second with code {int}")
 fn serve(port: u16) -> ExitCode {
     install_sigterm_handler()
         .unwrap_or_else(|err| eprintln!("thimbl: cannot arm SIGTERM handler: {err}"));
@@ -171,8 +171,10 @@ fn serve(port: u16) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// @planks("the server process has a file descriptor limit of {int}")
+/// @planks("{int} clients connect and stay silent")
+/// @planks("a new client queries the user's login name")
 /// @planks("the new client receives a response or a refusal within {int} seconds")
-/// @planks("The accept loop survives file descriptor exhaustion")
 /// Serves one client that is stuck in the listen backlog while the
 /// descriptor table is full: spends the pre-reserved duplicate of the
 /// listening socket's descriptor, accepts the queued client, sends the

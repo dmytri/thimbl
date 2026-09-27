@@ -6,21 +6,23 @@ Binding behaviour lives in `.feature` specs and referenced `assets/**`. History 
 
 ## Bootstrap decisions (2026-09-24)
 
-- Stack: Rust, std-only for the server, no runtime deps. Confirmed with user after TypeScript/Zig comparison.
-- Server = single-user finger, RFC 1288, port 79xx (default 7979), `--port` flag, prints bound port at startup.
-- Reads live `~/.project` and `~/.plan` per query. Identity fields from the user's own /etc/passwd line.
-- Exact match only on login or real name; unknown name = no-match answer (user chose exact match, not always-answer).
-- `@host` forwarding refused ("Finger forwarding service denied"). `/W` accepted. Overlong query refused.
-- Look and act exactly like finger(1), just on a different port. Multi-user/global option: later, not in specs yet.
-- Client finger: second pass, not specced yet.
+- Stack: Rust, std-only server (signal-hook added voyage 2 for SIGTERM). Single-user finger, RFC 1288, port 79xx (default 7979), `--port` flag, prints bound port at startup.
+- Reads live `~/.project` and `~/.plan` per query. Identity from the user's own /etc/passwd line, read once at startup (restart shows GECOS edits; per-query identity liveness NOT specced - open question).
+- Exact match on login or real name; unknown = no-match. `@host` refused. `/W` accepted. 512-byte limit. finger(1) long format.
+- Multi-user/global option: later. Client finger: second pass. Neither specced.
 
-## Harbour 1 (2026-09-25) - decisions for Captain
+## Harbour 2 (2026-09-25) - state at Captain review
 
-- Coverage 0% sur main.rs = faux signal: le harnais tue le serveur par SIGKILL, le profraw LLVM ne se flush qu'a un exit propre. 3 pistes: (a) QM remplace child.kill() par terminate()+wait dans tests/support/mod.rs, (b) Crew ajoute un handler SIGTERM/SIGINT au serveur - mais ca doit etre pinne par un scenario avant (skeleton @captain pret dans features/ServerLifecycle.feature), (c) accepter le 0% et s'appuyer sur la couverture logique des 14 scenarios. Decision a prendre: promote ServerLifecycle (piste b) ou QM-only (piste a).
-- 3 skeletons @captain a reviewer avec l'utilisateur: 2 methodology (HarborConformance.feature: watchbill shape, perturbation quiescence) + 1 product (ServerLifecycle.feature: arret propre SIGTERM).
-- 7 patterns de steps non planks (Given/Then de fixtures et assertions) = normal, pas de couture produite derriere.
-- RIGGING refit: verification = tests (features/steps n'existait pas), weather = .wake/weather.json, noms de deps corriges (cucumber/gherkin/tokio au lieu de @cucumber/cucumber), .ignore cree pour CAPTAIN.md.
-- gplint no-homogenous-tags passe a off (squelettes @conformance tagges a l'identique le declenchent).
-- Économie: 14 scenarios = 0.026s au total. Le cout est le build cargo (0.3-30s), pas l'execution. Aucun outlier.
-- Ratio methodologie: 2 @conformance / 17 scenarios.
-- Multi-user/global option et client finger: toujours en attente, decider au prochain voyage.
+- Shipwright full regression: 21/21 green, 119 steps. Plank corrections in flight (uncommitted, src/main.rs): 2 malformed planks fixed (scenario-name planks on serve() and refuse_one_backlogged() replaced with real step patterns). Joint now 34 planks / 0 unresolved / 0 provisional.
+- Shipwright findings awaiting Captain routing:
+  1. HARNESS TEARDOWN DEBT (highest leverage): server 10s READ_TIMEOUT leaks into After hook; 18/21 scenarios sit at ~10.2s floor; total 193.9s. Fix is QM-scope (SIGTERM-first-then-kill in tests/support). Not a product defect.
+  2. Content catalog: 8 product-facing strings in main.rs; assets: none today. Captain decision.
+  3. Coverage 0% instrument artifact: same SIGKILL-vs-clean-exit cause; the QM teardown fix (route 1) also repairs it.
+  4. Verification-conformance rule set (plank rules) still unwritten - owed at next fitting-out-grade harbour.
+  5. 3 transitive deps behind (serde_with, smallvec) - locked policy, no action.
+- Deck: src/main.rs modified (plank fixes only, no behaviour change). Needs Boatswain custody.
+
+## Decisions this session (2026-09-25, post-harbour)
+
+- Teardown debt: route to QM as a watchbill target? NOT YET DECIDED - pending user word.
+- Outbound: v0.2.0 release candidate (robustness + plank fixes) - offered, pending user word.
