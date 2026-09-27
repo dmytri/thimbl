@@ -27,7 +27,7 @@ pub fn shutdown(world: &mut FingerWorld) {
     world.partial_client = None;
     world.watchbill_present = false;
     if let Some(server) = world.server.as_mut() {
-        server.kill();
+        server.terminate();
     }
     cleanup_home(&world.home);
 }
@@ -126,6 +126,34 @@ impl ServerHandle {
     pub fn kill(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+
+    /// SIGTERM-first teardown: the product's pinned clean-exit path
+    /// (features/ServerLifecycle.feature, SIGTERM scenario). Waits a
+    /// bounded grace period for the server to exit; SIGKILL only on
+    /// expiry, so a hung server never wedges the harness.
+    pub fn terminate(&mut self) {
+        if self.try_wait().is_some() {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            // `kill(2)` via pre-exec mutation of a 1-instruction command;
+            // no direct-signals dependency. Not the spawn path: the child
+            // handle's pid stays the server's own.
+            let _ = std::process::Command::new("kill")
+                .arg("-TERM")
+                .arg(self.child.id().to_string())
+                .status();
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if self.try_wait().is_some() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        self.kill();
     }
 
     /// The server process id, for signal delivery by the harness.

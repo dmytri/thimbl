@@ -1,0 +1,8 @@
+{
+  "watch1": {
+    "scenarios": [
+      "features/HarborConformance.feature:The watchbill respects its fixed shape",
+      "features/HarborConformance.feature:The implementation carries no standing perturbation token"
+    ]
+  }
+}
