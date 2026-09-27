@@ -26,6 +26,7 @@ pub fn shutdown(world: &mut FingerWorld) {
     world.idle_clients.clear();
     world.partial_client = None;
     world.watchbill_present = false;
+    world.plan_edit = None;
     if let Some(server) = world.server.as_mut() {
         server.terminate();
     }
@@ -109,6 +110,9 @@ pub struct FingerWorld {
     pub partial_client: Option<TcpStream>,
     /// Whether the watchbill shape check found watchbill.json on the deck.
     pub watchbill_present: bool,
+    /// Last plan file content written by a plan-edit step, for reasserting
+    /// the state-directory card after the write.
+    pub plan_edit: Option<String>,
     /// Server stderr captured in a background thread (logging scenario).
     pub server_stderr: Arc<Mutex<String>>,
     /// Source files a conformance search found carrying the sought token.
@@ -191,13 +195,42 @@ impl FingerWorld {
         base
     }
 
-    /// Writes `.project` with the given content (if `Some`) or removes it
-    /// (if `None`), then records the fixture state.
+    /// The state directory holding the served card files: the fixed
+    /// production path `$HOME/.local/share/thimbl`, as the
+    /// `FingerStateDir` spec pins it. The seeding home dot-files stay in
+    /// the HOME root beside it.
+    pub fn state_dir(&mut self) -> PathBuf {
+        self.temp_home().join(".local/share/thimbl")
+    }
+
+    /// Removes one card file (`.project`/`.plan`) from the state
+    /// directory without creating the directory: the "no file" state.
+    pub fn remove_state_file(&mut self, file: &str) {
+        let dir = self.state_dir();
+        match std::fs::remove_file(dir.join(file)) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => panic!("remove {file} from the state directory: {err}"),
+        }
+    }
+
+    /// Ensures the state directory exists and returns it: the base for
+    /// direct fixture writes that must not create the directory as a side
+    /// effect.
+    pub fn ensure_state_dir(&mut self) -> PathBuf {
+        let dir = self.state_dir();
+        std::fs::create_dir_all(&dir).expect("create state directory");
+        dir
+    }
+
+    /// Writes the served `.project` card file in the state directory (if
+    /// `Some`) or removes it (if `None`), then records the fixture state.
     pub fn set_project(&mut self, content: Option<&str>) {
-        let home = self.temp_home();
-        let path = home.join(".project");
+        let dir = self.state_dir();
+        let path = dir.join(".project");
         match content {
             Some(text) => {
+                std::fs::create_dir_all(&dir).expect("create state directory");
                 std::fs::write(&path, text).expect("write .project");
                 self.files.project = Some(text.to_string());
             }
@@ -208,13 +241,14 @@ impl FingerWorld {
         }
     }
 
-    /// Writes `.plan` with the given content (if `Some`) or removes it
-    /// (if `None`), then records the fixture state.
+    /// Writes the served `.plan` card file in the state directory (if
+    /// `Some`) or removes it (if `None`), then records the fixture state.
     pub fn set_plan(&mut self, content: Option<&str>) {
-        let home = self.temp_home();
-        let path = home.join(".plan");
+        let dir = self.state_dir();
+        let path = dir.join(".plan");
         match content {
             Some(text) => {
+                std::fs::create_dir_all(&dir).expect("create state directory");
                 std::fs::write(&path, text).expect("write .plan");
                 self.files.plan = Some(text.to_string());
             }

@@ -9,7 +9,7 @@
 
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -391,6 +391,9 @@ fn response_text(world: &mut FingerWorld) -> String {
 const WATCHBILL_PATH: &str = "watchbill.json";
 /// Implementation directory the conformance scenarios search.
 const SRC_DIR: &str = "src";
+/// Rigging path whose `## Tiers` section defines the valid tier tags a
+/// watchbill entry may carry.
+const RIGGING_PATH: &str = "RIGGING.md";
 
 #[given(expr = "the watchbill file at {string} when present")]
 fn watchbill_present(world: &mut FingerWorld, path: String) {
@@ -437,6 +440,16 @@ fn read_watchbill(_world: &mut FingerWorld) {
             let entry = entry
                 .as_str()
                 .unwrap_or_else(|| panic!("watch {key:?} entry {entry:?} must be a string"));
+            // A tier tag directs an enumeration sweep of that tier, per the
+            // Watchbill policy; it is valid exactly when the tag is defined
+            // under `## Tiers` in RIGGING.md.
+            if entry.starts_with('@') {
+                assert!(
+                    tier_tag_defined(entry),
+                    "watch {key:?} tier tag {entry:?} is not defined under `## Tiers` in {RIGGING_PATH}"
+                );
+                continue;
+            }
             let (spec, name) = entry.split_once(':').unwrap_or_else(|| {
                 panic!("entry {entry:?} does not follow \"<spec>.feature:<Scenario Name>\"")
             });
@@ -502,6 +515,11 @@ fn watchbill_reference_form(world: &mut FingerWorld, form: String) {
             .unwrap_or_else(|| panic!("watch {key:?} must hold a scenarios array"));
         for entry in scenarios {
             let entry = entry.as_str().expect("entry string");
+            // A tier tag carries no reference form; its validity is the
+            // `## Tiers` definition, checked by the read step.
+            if entry.starts_with('@') {
+                continue;
+            }
             let (spec, name) = entry.split_once(':').unwrap_or_else(|| {
                 panic!("entry {entry:?} lacks the \"<spec>.feature:<Scenario>\" colon")
             });
@@ -511,6 +529,29 @@ fn watchbill_reference_form(world: &mut FingerWorld, form: String) {
             );
         }
     }
+}
+
+/// Whether the tier tag is defined under `## Tiers` in RIGGING.md: the
+/// default tier bullet `- default: @tag`, or an opt-in `- @tag` bullet.
+fn tier_tag_defined(tag: &str) -> bool {
+    let Some(raw) = std::fs::read_to_string(RIGGING_PATH).ok() else {
+        return false;
+    };
+    let mut in_tiers = false;
+    for line in raw.lines() {
+        if line.starts_with("## ") {
+            in_tiers = line.starts_with("## Tiers");
+            continue;
+        }
+        if !in_tiers {
+            continue;
+        }
+        let bullet = line.trim_start().strip_prefix("- ").map(str::trim);
+        if bullet == Some(tag) || bullet == Some(&format!("default: {tag}")) {
+            return true;
+        }
+    }
+    false
 }
 
 #[then("an absent watchbill conforms as the deck at rest")]
@@ -806,5 +847,119 @@ fn output_contains_client_address(world: &mut FingerWorld) {
     assert!(
         log.contains("127.0.0.1"),
         "server output does not contain the client address: {log:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// FingerStateDir: state-directory card storage
+// ---------------------------------------------------------------------------
+
+#[given("the state directory has no project file")]
+fn state_no_project(world: &mut FingerWorld) {
+    world.remove_state_file(".project");
+    world.set_project(None);
+}
+
+#[given("the state directory has no plan file")]
+fn state_no_plan(world: &mut FingerWorld) {
+    world.remove_state_file(".plan");
+    world.set_plan(None);
+}
+
+#[given(expr = "the home has a project file with content {string}")]
+fn home_project(world: &mut FingerWorld, content: String) {
+    let home = world.temp_home();
+    std::fs::write(home.join(".project"), content).expect("write home .project");
+}
+
+#[given(expr = "the home has a plan file with content {string}")]
+fn home_plan(world: &mut FingerWorld, content: String) {
+    let home = world.temp_home();
+    std::fs::write(home.join(".plan"), content).expect("write home .plan");
+}
+
+#[given(expr = "the state directory has a plan file with content {string}")]
+fn state_plan(world: &mut FingerWorld, content: String) {
+    world.set_plan(Some(&content));
+}
+
+#[then(expr = "the state directory has the project content {string}")]
+fn state_has_project(world: &mut FingerWorld, content: String) {
+    let path = world.state_dir().join(".project");
+    let read = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("read state .project at {}: {err}", path.display()));
+    assert_eq!(
+        read, content,
+        "state .project does not carry the seeded content"
+    );
+}
+
+#[then(expr = "the state directory has the plan content {string}")]
+fn state_has_plan(world: &mut FingerWorld, content: String) {
+    let path = world.state_dir().join(".plan");
+    let read = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("read state .plan at {}: {err}", path.display()));
+    assert_eq!(
+        read, content,
+        "state .plan does not carry the seeded content"
+    );
+}
+
+#[when(expr = "the state directory plan is changed to {string}")]
+fn state_plan_changed(world: &mut FingerWorld, content: String) {
+    let dir = world.ensure_state_dir();
+    let path = dir.join(".plan");
+    std::fs::write(&path, &content).expect("write state .plan");
+    world.plan_edit = Some(content);
+}
+
+/// Asserts the card files sit at the fixed state directory path the spec
+/// pins: `$HOME/.local/share/thimbl`, read from the temp HOME the server
+/// was started with. `expr =` cannot express the literal step: a Cucumber
+/// expression treats `/` as an alternation separator and a bare `\"` as a
+/// parse error, so the step is bound as a fully anchored regex instead.
+#[then(regex = "^\\\"\\$HOME/\\.local/share/thimbl\\\" contains the card files$")]
+fn state_dir_contains_card_files(world: &mut FingerWorld) {
+    let home = world
+        .home
+        .clone()
+        .expect("the server runs on a temp HOME fixture");
+    let state_dir = home.join(".local/share/thimbl");
+    let project = world.files.project.clone();
+    let plan = world.files.plan.clone();
+    let expected: [(&str, PathBuf, Option<String>); 2] = [
+        ("Project", state_dir.join(".project"), project),
+        ("Plan", state_dir.join(".plan"), plan),
+    ];
+    for (label, path, content) in expected {
+        let read = std::fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!("read the {label} card file at {}: {err}", path.display())
+        });
+        assert_eq!(
+            read,
+            content.unwrap_or_default(),
+            "the {label} card file does not carry the fixture content"
+        );
+    }
+}
+
+#[then(expr = "the response contains a {string} section with the current plan")]
+fn response_plan_is_edited(world: &mut FingerWorld, section: String) {
+    let edited = world
+        .plan_edit
+        .clone()
+        .expect("a state-directory plan edit was made");
+    let text = response_text(world);
+    let header = format!("{section}:");
+    let start = text
+        .find(&header)
+        .unwrap_or_else(|| panic!("response has no {header:?} section: {text:?}"));
+    let body = &text[start + header.len()..];
+    let body = body.strip_prefix("\r\n").unwrap_or(body);
+    let end = body.find("\r\n").unwrap_or(body.len());
+    let served = &body[..end];
+    assert_eq!(
+        served, edited,
+        "served {section:?} section does not carry the current state-directory plan"
     );
 }

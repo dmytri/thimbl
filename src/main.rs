@@ -1,9 +1,14 @@
 //! thimbl — a single-user RFC 1288 finger server.
 //!
 //! Serves exactly one card: the identity of the user running the server,
-//! taken from that user's own `/etc/passwd` line, plus the `~/.project`
-//! and `~/.plan` files. The dot-files are re-read from the `HOME` the
-//! server was started with on every query, so edits show up immediately.
+//! taken from that user's own `/etc/passwd` line, plus the `.project`
+//! and `.plan` card files in the state directory
+//! (`$HOME/.local/share/thimbl`). The card files are re-read from the
+//! state directory on every query, so edits show up immediately. On
+//! first run the server establishes the state directory: a missing card
+//! file is seeded from the `~/.project` or `~/.plan` dot-file in the
+//! `HOME` root when present, else created empty; existing
+//! state-directory files are never overwritten.
 //!
 //! Over TCP the server answers the RFC 1288 `{C}` query grammar:
 //!
@@ -107,6 +112,7 @@ fn serve(port: u16) -> ExitCode {
     install_sigterm_handler()
         .unwrap_or_else(|err| eprintln!("thimbl: cannot arm SIGTERM handler: {err}"));
     let finger = Arc::new(Finger::current());
+    finger.seed_state_dir();
     let listener = match TcpListener::bind((HOST, port)) {
         Ok(listener) => listener,
         Err(err) => {
@@ -267,20 +273,51 @@ fn read_query(stream: &mut TcpStream) -> io::Result<Option<String>> {
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
-/// Everything the server serves: one identity plus the `HOME` the
-/// dot-files are read from. Shared across connection threads.
+/// Everything the server serves: one identity plus the state directory
+/// the card files are read from. Shared across connection threads.
 struct Finger {
     identity: Identity,
     home: Option<PathBuf>,
+    state_dir: Option<PathBuf>,
 }
 
 impl Finger {
     /// @planks("the finger server is running on an ephemeral port")
     /// @planks("the finger server is started on port 0")
     fn current() -> Self {
+        let home = env::var_os("HOME").map(PathBuf::from);
+        let state_dir = home.as_deref().map(|home| home.join(".local/share/thimbl"));
         Self {
             identity: current_identity(),
-            home: env::var_os("HOME").map(PathBuf::from),
+            home,
+            state_dir,
+        }
+    }
+
+    /// @planks("the state directory has the project content {string}")
+    /// @planks("the state directory has the plan content {string}")
+    /// @planks("the state directory plan is changed to {string}")
+    /// Establishes the card files in the state directory on first run:
+    /// a missing card file is seeded from the HOME-root dot-file when
+    /// present, else created empty. Existing state-directory files are
+    /// never overwritten, and the copy happens once at startup, so later
+    /// HOME-root edits and deletions leave the served card untouched.
+    fn seed_state_dir(&self) {
+        let Some(state_dir) = &self.state_dir else {
+            return;
+        };
+        for file in [".project", ".plan"] {
+            let target = state_dir.join(file);
+            if target.exists() {
+                continue;
+            }
+            let content = self
+                .home
+                .as_deref()
+                .and_then(|home| fs::read(home.join(file)).ok())
+                .unwrap_or_default();
+            let _ = fs::create_dir_all(state_dir);
+            let _ = fs::write(&target, content);
         }
     }
 
@@ -316,7 +353,7 @@ impl Finger {
     /// @planks("the response contains (?:a|an) \"([^\"]+)\" line with the (.+)")
     /// @planks("every line of the response ends with CRLF")
     /// The finger(1) long format: identity lines followed by the Project
-    /// and Plan sections, read from `HOME` at call time.
+    /// and Plan sections, read from the state directory at call time.
     fn long_card(&self) -> String {
         let mut card = String::new();
         for (label, value) in [
@@ -340,15 +377,16 @@ impl Finger {
     /// @planks("the response contains the plan content {string}")
     /// @planks("the plan file content is changed to {string}")
     /// @planks("the response does not contain {string}")
-    /// Appends one named section: the live file content when present, the
-    /// fixed notice otherwise.
+    /// Appends one named section: the live non-empty file content when
+    /// present, the fixed notice for a missing or empty card file.
     fn append_section(&self, card: &mut String, header: &str, file: &str, absent: &str) {
         card.push_str(header);
         card.push(':');
         card.push_str(CRLF);
-        let content = self.home.as_deref().and_then(|home| {
-            fs::read(home.join(file))
+        let content = self.state_dir.as_deref().and_then(|state_dir| {
+            fs::read(state_dir.join(file))
                 .ok()
+                .filter(|bytes| !bytes.is_empty())
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         });
         match content {
