@@ -10,21 +10,21 @@ Feature: Finger protocol surface
 
   Scenario: Empty query returns the full user card
     When a client connects and sends an empty query
-    Then the response contains the user's login and real name
+    Then the response contains the user's identity line
     And the response contains the project content "Deploying thimbl"
     And the response contains the plan content "Ship the finger server"
     And the server closes the connection
 
   Scenario: Query naming the published user returns the long format
     When a client connects and sends the user's login name
-    Then the response contains the login, real name, directory and shell
+    Then the response contains the user's identity line
     And the response contains the project content "Deploying thimbl"
     And the response contains the plan content "Ship the finger server"
     And the server closes the connection
 
   Scenario: Query naming the real name returns the long format
     When a client connects and sends the user's real name
-    Then the response contains the user's login and real name
+    Then the response contains the user's identity line
     And the response contains the plan content "Ship the finger server"
 
   Scenario: Query naming an unknown user gets the no-match answer
@@ -43,7 +43,7 @@ Feature: Finger protocol surface
 
   Scenario: The verbose switch is accepted
     When a client connects and sends the query "/W"
-    Then the response contains the user's login and real name
+    Then the response contains the user's identity line
 
   @contract
   Scenario: The empty query response conforms to its mechanical shape

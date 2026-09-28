@@ -31,6 +31,8 @@ pub fn shutdown(world: &mut FingerWorld) {
     world.partial_client = None;
     world.watchbill_present = false;
     world.plan_edit = None;
+    world.user_edit = None;
+    world.files.user = None;
     if let Some(server) = world.server.as_mut() {
         server.terminate();
     }
@@ -94,6 +96,7 @@ fn passwd_line_for(login: &str) -> Option<String> {
 pub struct FixtureFiles {
     pub project: Option<String>,
     pub plan: Option<String>,
+    pub user: Option<String>,
 }
 
 /// Per-scenario world: identity, temp HOME fixtures, the server process and
@@ -117,6 +120,9 @@ pub struct FingerWorld {
     /// Last plan file content written by a plan-edit step, for reasserting
     /// the state-directory card after the write.
     pub plan_edit: Option<String>,
+    /// Last user file content written by a user-edit step, for reasserting
+    /// the state-directory identity after the write.
+    pub user_edit: Option<String>,
     /// Server stderr captured in a background thread (logging scenario).
     pub server_stderr: Arc<Mutex<String>>,
     /// Source files a conformance search found carrying the sought token.
@@ -272,6 +278,24 @@ impl FingerWorld {
             None => {
                 let _ = std::fs::remove_file(&path);
                 self.files.plan = None;
+            }
+        }
+    }
+
+    /// Writes the served `.user` identity file in the state directory (if
+    /// `Some`) or removes it (if `None`), then records the fixture state.
+    pub fn set_user(&mut self, content: Option<&str>) {
+        let dir = self.state_dir();
+        let path = dir.join(".user");
+        match content {
+            Some(text) => {
+                std::fs::create_dir_all(&dir).expect("create state directory");
+                std::fs::write(&path, text).expect("write .user");
+                self.files.user = Some(text.to_string());
+            }
+            None => {
+                let _ = std::fs::remove_file(&path);
+                self.files.user = None;
             }
         }
     }

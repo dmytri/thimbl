@@ -14,11 +14,11 @@
 //!      triggers the same conflict — the RIGGING.md focused command
 //!      combines both, so CLI parsing must be skipped;
 //!   2. `--name` is applied as a strict regex against scenario names,
-//!      and scenario "Long format mirrors finger(1) fields" contains
-//!      regex metacharacters — the raw expansion can never match. The
-//!      harness therefore owns `--name` parsing (regex first, exact
-//!      literal fallback) and the zero-scenario guard: a focused run
-//!      that selects 0 scenarios fails loudly with exit 2.
+//!      and scenario names carry regex metacharacters (historically
+//!      "Long format mirrors finger(1) fields") — the raw expansion can
+//!      never match. The harness therefore owns `--name` parsing (regex
+//!      first, exact literal fallback) and the zero-scenario guard: a
+//!      focused run that selects 0 scenarios fails loudly with exit 2.
 //!
 //! Scenario selection applied by `filter_run_and_exit`'s predicate:
 //! `CUCUMBER_FILTER_TAGS` tag expression AND (when given) the `--name`

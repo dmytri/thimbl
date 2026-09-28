@@ -4,9 +4,10 @@
 //! state directory, `thimbl serve` serves it, and bare `thimbl` prints
 //! usage and exits non-zero.
 //!
-//! Serving answers with exactly one card: the identity of the user
-//! running the server, taken from that user's own `/etc/passwd` line,
-//! plus the `.project` and `.plan` card files in the state directory
+//! Serving answers with exactly one card: one identity line resolving
+//! the user's name from the state directory's `.user` file, then the
+//! user's own `/etc/passwd` comment field, then the login, plus the
+//! `.project` and `.plan` card files in the state directory
 //! (`$HOME/.local/share/thimbl`). The card files are re-read from the
 //! state directory on every query, so edits show up immediately. The
 //! server itself does no setup work: establishment is `init`'s job, so
@@ -126,6 +127,8 @@ fn usage() {
 /// @planks("thimbl init has run")
 /// @planks("the init run exits with code {int}")
 /// @planks("the init output names the state directory")
+/// @planks("the state directory has the user content from the passwd comment")
+/// @planks("the state directory has the user content {string}")
 /// Establishes the card state directory from the home dot-files: each
 /// card file's state directory copy is seeded from the home dot-file
 /// when missing (empty when the home has none), never overwritten when
@@ -133,7 +136,9 @@ fn usage() {
 /// relative symlink unless `--no-link` asks otherwise. A home regular
 /// file whose content differs from the state file is a conflict: it is
 /// reported and left alone, or with `--force` its content is moved into
-/// the state file and the link replaces it.
+/// the state file and the link replaces it. The `.user` identity file
+/// is seeded from the passwd comment and never overwritten, with no
+/// home symlink.
 fn init_state_dir() -> ExitCode {
     let mut force = false;
     let mut link = true;
@@ -169,10 +174,35 @@ fn init_state_dir() -> ExitCode {
             failed = true;
         }
     }
+    seed_user_file(&state_dir);
     if failed {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// Seeds the state directory's `.user` identity file from the passwd
+/// comment field's first comma segment, falling back to the login, when
+/// the file is missing; an existing `.user` is never overwritten. The
+/// home gets no `.user` symlink: it is an identity file, not a classic
+/// dot-file.
+fn seed_user_file(state_dir: &std::path::Path) {
+    let state_file = state_dir.join(".user");
+    if state_file.exists() {
+        eprintln!("thimbl: {}: kept", state_file.display());
+        return;
+    }
+    let identity = current_identity();
+    let value = if identity.real_name.is_empty() {
+        &identity.login
+    } else {
+        &identity.real_name
+    };
+    if let Err(err) = fs::write(&state_file, value.as_bytes()) {
+        eprintln!("thimbl: cannot seed {}: {err}", state_file.display());
+    } else {
+        eprintln!("thimbl: {}: seeded", state_file.display());
     }
 }
 
@@ -533,6 +563,7 @@ struct Finger {
 impl Finger {
     /// @planks("the finger server is running on an ephemeral port")
     /// @planks("the finger server is started on port 0")
+    /// @planks("the response contains the user's identity line")
     fn current() -> Self {
         let home = env::var_os("HOME").map(PathBuf::from);
         let state_dir = home.as_deref().map(|home| home.join(".local/share/thimbl"));
@@ -570,27 +601,40 @@ impl Finger {
             || self.identity.real_name.eq_ignore_ascii_case(target)
     }
 
-    /// @planks("the response contains the login, real name, directory and shell")
-    /// @planks("the response contains (?:a|an) \"([^\"]+)\" line with the (.+)")
+    /// @planks("the response contains (?:a|an) \"([^\"]+)\" line with (?:the )?(?:\"([^\"]+)\"|(.+))")
     /// @planks("every line of the response ends with CRLF")
-    /// The finger(1) long format: identity lines followed by the Project
-    /// and Plan sections, read from the state directory at call time.
+    /// The finger(1) long format: one identity line naming the resolved
+    /// user, then the Project and Plan sections, read from the state
+    /// directory at call time.
     fn long_card(&self) -> String {
-        let mut card = String::new();
-        for (label, value) in [
-            ("Login name", self.identity.login.as_str()),
-            ("In real life", self.identity.real_name.as_str()),
-            ("Directory", self.identity.home.as_str()),
-            ("Shell", self.identity.shell.as_str()),
-        ] {
-            card.push_str(label);
-            card.push_str(": ");
-            card.push_str(value);
-            card.push_str(CRLF);
-        }
+        let mut card = format!("User: {}{CRLF}", self.identity());
         self.append_section(&mut card, "Project", ".project", "No Project.");
         self.append_section(&mut card, "Plan", ".plan", "No Plan.");
         card
+    }
+
+    /// The resolved identity of the card: the state directory's `.user`
+    /// file (read live, trimmed), then the passwd comment field, then
+    /// the login; an empty value falls through to the next source.
+    fn identity(&self) -> String {
+        let sources = [
+            self.user_file_identity(),
+            Some(self.identity.real_name.clone()),
+            Some(self.identity.login.clone()),
+        ];
+        sources
+            .into_iter()
+            .flatten()
+            .find(|value| !value.is_empty())
+            .unwrap_or_default()
+    }
+
+    /// The `.user` file content from the state directory, read per query
+    /// and trimmed; `None` when the file is missing or blank.
+    fn user_file_identity(&self) -> Option<String> {
+        let content = fs::read_to_string(self.state_dir.as_ref()?.join(".user")).ok()?;
+        let trimmed = content.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
     }
 
     /// @planks("the response contains a {string} section with {string}")
@@ -635,25 +679,23 @@ fn append_body(card: &mut String, content: &str) {
 struct Identity {
     login: String,
     real_name: String,
-    home: String,
-    shell: String,
 }
 
 /// Identity of the user running the server, from their own `/etc/passwd`
-/// line. Falls back to the environment alone when `/etc/passwd` is
-/// unusable, so the failure is loud rather than serving a wrong card.
+/// line. The comment field is the card's identity fallback; the login
+/// is the match key and the last identity fallback. Falls back to the
+/// environment alone when `/etc/passwd` is unusable, so the failure is
+/// loud rather than serving a wrong card.
 fn current_identity() -> Identity {
     passwd_identity().unwrap_or_else(|| Identity {
         login: env::var("USER")
             .or_else(|_| env::var("LOGNAME"))
             .unwrap_or_default(),
         real_name: String::new(),
-        home: String::new(),
-        shell: String::new(),
     })
 }
 
-/// @planks("the response contains the login, real name, directory and shell")
+/// @planks("the response contains the user's identity line")
 /// Finds the invoking user's `/etc/passwd` line: by real uid when known,
 /// otherwise by login name. Returns `None` when no line matches.
 fn passwd_identity() -> Option<Identity> {
@@ -686,8 +728,6 @@ fn identity_from(fields: &[&str]) -> Identity {
             .map(|gecos| gecos.split_once(',').map_or(*gecos, |(name, _)| name))
             .unwrap_or_default()
             .to_string(),
-        home: fields[5].to_string(),
-        shell: fields.get(6).unwrap_or(&"").to_string(),
     }
 }
 

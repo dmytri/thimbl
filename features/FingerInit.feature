@@ -59,6 +59,15 @@ Feature: Finger init
     When a client connects and sends the user's login name
     Then the response contains a "Plan:" section with "Updated plan"
 
+  Scenario: Init seeds the user file from the passwd comment
+    When thimbl init runs
+    Then the state directory has the user content from the passwd comment
+
+  Scenario: Init never overwrites an existing user file
+    Given the state directory has a user file with content "Captain"
+    When thimbl init runs
+    Then the state directory has the user content "Captain"
+
   Scenario: Init with no home dot-files creates empty state files and links them
     Given the state directory has no plan file
     And the home has no plan file

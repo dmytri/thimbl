@@ -1,10 +1,12 @@
 # thimbl
 
-A single-user finger server (RFC 1288). It serves exactly one card: the
-identity of the user running it, taken from its own `/etc/passwd` line,
-plus the project and plan text from one state directory. Identity is
-read once at startup; project and plan are re-read on every query, so
-edits show up immediately.
+A single-user finger server (RFC 1288). It serves exactly one card: an
+identity line plus the project and plan text from one state directory.
+The identity line resolves in this order: the state directory's `.user`
+file, the comment field of the user's own `/etc/passwd` line, the login
+name; an empty value falls through to the next source. Project, plan
+and user files are re-read on every query, so edits show up
+immediately.
 
 ## Serving
 

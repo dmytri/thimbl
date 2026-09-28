@@ -243,17 +243,24 @@ fn schema_matches(pattern: &str, response: &[u8]) -> bool {
 
 // cucumber-expressions {string} binds only quoted values; the feature
 // steps here end with an unquoted field name ("the login", "the real
-// name", "the home directory", "the shell"), so this step is matched
-// with a regex instead of a cucumber expression.
-#[then(regex = r#"the response contains (?:a|an) "([^"]+)" line with the (.+)"#)]
-fn response_line_with(world: &mut FingerWorld, section: String, field: String) {
+// name", "the home directory", "the shell") or a quoted literal, so this
+// step is matched with a regex instead of a cucumber expression.
+#[then(regex = r#"the response contains (?:a|an) "([^"]+)" line with (?:the )?(?:"([^"]+)"|(.+))"#)]
+fn response_line_with(world: &mut FingerWorld, section: String, quoted: String, field: String) {
     let text = response_text(world);
-    let value = match field.trim() {
-        "login" => world.identity().login.clone(),
-        "real name" => world.identity().real_name.clone(),
-        "home directory" => world.identity().home.clone(),
-        "shell" => world.identity().shell.clone(),
-        other => other.to_string(),
+    // cucumber-rs fills exactly one capture alternative; the empty other
+    // is the unbound one.
+    let value = if !quoted.is_empty() {
+        quoted
+    } else {
+        match field.trim() {
+            "login" => world.identity().login.clone(),
+            "real name" => world.identity().real_name.clone(),
+            "comment field" => world.identity().real_name.clone(),
+            "home directory" => world.identity().home.clone(),
+            "shell" => world.identity().shell.clone(),
+            other => other.to_string(),
+        }
     };
     let line = format!("{section} {value}");
     assert!(
@@ -325,6 +332,22 @@ fn no_plan(world: &mut FingerWorld) {
 #[given("the user has no project file")]
 fn no_project(world: &mut FingerWorld) {
     world.set_project(None);
+}
+
+// The feature states the empty-comment precondition against the invoking
+// user's real /etc/passwd line, which the harness cannot rewrite. The
+// precondition is instead provisioned in the identity fixture this suite
+// runs under (tests/support/identity-fixture/README.md): the comment
+// field must be empty there for this scenario, and the step asserts the
+// state the server will read.
+#[given("the user's passwd comment is empty")]
+fn empty_passwd_comment(world: &mut FingerWorld) {
+    let comment = world.identity().real_name.clone();
+    assert!(
+        comment.is_empty(),
+        "this scenario requires an identity fixture whose passwd comment \
+         is empty; the fixture identity carries {comment:?}"
+    );
 }
 
 #[then(expr = "the response does not contain {string}")]
@@ -743,10 +766,14 @@ fn other_client_login_query(world: &mut FingerWorld) {
 
 #[then("the other client receives the full card")]
 fn other_client_full_card(world: &mut FingerWorld) {
-    let id = world.identity().clone();
     let text = response_text(world);
+    // The full card per the current specs: the identity line naming the
+    // resolved user, then the Project and Plan sections. The sections'
+    // bodies follow whatever the state directory carries; a bare query
+    // with no fixtures serves the No Project./No Plan. notices, which is
+    // the card shape this assertion pins.
     assert!(
-        text.contains(&id.login) && text.contains("In real life"),
+        text.contains("User:") && text.contains("Project:") && text.contains("Plan:"),
         "other client did not receive the full card: {text:?}"
     );
 }
@@ -929,6 +956,11 @@ fn state_plan(world: &mut FingerWorld, content: String) {
     world.set_plan(Some(&content));
 }
 
+#[given(expr = "the state directory has a user file with content {string}")]
+fn state_user(world: &mut FingerWorld, content: String) {
+    world.set_user(Some(&content));
+}
+
 #[then(expr = "the state directory has the project content {string}")]
 fn state_has_project(world: &mut FingerWorld, content: String) {
     let path = world.state_dir().join(".project");
@@ -957,6 +989,14 @@ fn state_plan_changed(world: &mut FingerWorld, content: String) {
     let path = dir.join(".plan");
     std::fs::write(&path, &content).expect("write state .plan");
     world.plan_edit = Some(content);
+}
+
+#[when(expr = "the state directory user is changed to {string}")]
+fn state_user_changed(world: &mut FingerWorld, content: String) {
+    let dir = world.ensure_state_dir();
+    let path = dir.join(".user");
+    std::fs::write(&path, &content).expect("write state .user");
+    world.user_edit = Some(content);
 }
 
 /// Asserts the card files sit at the fixed state directory path the spec
@@ -1024,6 +1064,72 @@ fn response_plan_is_edited(world: &mut FingerWorld, section: String) {
     assert_eq!(
         served, edited,
         "served {section:?} section does not carry the current state-directory plan"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// FingerCardDisplay / FingerProtocol: the identity line
+// ---------------------------------------------------------------------------
+
+/// The card's identity line is `User: <name>` followed by CRLF, where
+/// `<name>` resolves in the order the Finger card display feature pins:
+/// the state directory's `.user` file, then the passwd comment field,
+/// then the login; an empty value falls through to the next source.
+fn expected_user_line(world: &mut FingerWorld) -> String {
+    if let Some(user) = world.files.user.clone()
+        && !user.is_empty()
+    {
+        return format!("User: {user}");
+    }
+    let id = world.identity().clone();
+    if !id.real_name.is_empty() {
+        format!("User: {}", id.real_name)
+    } else {
+        format!("User: {}", id.login)
+    }
+}
+
+#[then("the response contains the user's identity line")]
+fn response_identity_line(world: &mut FingerWorld) {
+    let line = expected_user_line(world);
+    let text = response_text(world);
+    assert!(
+        text.contains(&line),
+        "response missing identity line {line:?}: {text:?}"
+    );
+}
+
+#[then(expr = "the state directory has the user content {string}")]
+fn state_has_user(world: &mut FingerWorld, content: String) {
+    let path = world.state_dir().join(".user");
+    let read = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("read state .user at {}: {err}", path.display()));
+    assert_eq!(read, content, "state .user does not carry the content");
+}
+
+#[then("the state directory has the user content from the passwd comment")]
+fn state_has_user_from_passwd(world: &mut FingerWorld) {
+    let comment = world.identity().real_name.clone();
+    let path = world.state_dir().join(".user");
+    let read = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("read state .user at {}: {err}", path.display()));
+    assert_eq!(
+        read, comment,
+        "state .user was not seeded from the passwd comment field"
+    );
+}
+
+#[then(expr = "the response contains a {string} line with the current user")]
+fn response_user_is_edited(world: &mut FingerWorld, section: String) {
+    let edited = world
+        .user_edit
+        .clone()
+        .expect("a state-directory user edit was made");
+    let text = response_text(world);
+    let line = format!("{section} {edited}");
+    assert!(
+        text.contains(&line),
+        "response does not carry the current state-directory user: {text:?}"
     );
 }
 
