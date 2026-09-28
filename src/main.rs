@@ -82,6 +82,10 @@ fn main() -> ExitCode {
     match env::args().nth(1).as_deref() {
         // Bare `thimbl` and anything unrecognized are refusals, not
         // servers: serving is deliberate, behind the `serve` subcommand.
+        Some("--help") => {
+            usage();
+            ExitCode::SUCCESS
+        }
         Some("serve") => match port_from_args() {
             Ok(port) => serve(port),
             Err(message) => {
@@ -137,6 +141,10 @@ fn init_state_dir() -> ExitCode {
         match arg.as_str() {
             "--force" => force = true,
             "--no-link" => link = false,
+            "--help" => {
+                usage();
+                return ExitCode::SUCCESS;
+            }
             other => {
                 eprintln!("thimbl: unknown argument {other:?}");
                 usage();
@@ -234,6 +242,7 @@ fn establish_card(
                 if force {
                     fs::write(&state_file, &home_content)
                         .map_err(|err| format!("cannot seed {}: {err}", state_file.display()))?;
+                    eprintln!("thimbl: {}: replaced", state_file.display());
                 } else {
                     conflict = true;
                     eprintln!(
@@ -331,6 +340,9 @@ fn port_from_args() -> Result<u16, String> {
             args.next().ok_or("--port requires a value")?
         } else if let Some(raw) = arg.strip_prefix("--port=") {
             raw.to_string()
+        } else if arg == "--help" {
+            usage();
+            std::process::exit(0);
         } else {
             return Err(format!("unknown argument {arg:?}"));
         };

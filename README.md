@@ -65,20 +65,31 @@ systemd unit:
 
 ```ini
 [Service]
-ExecStart=/usr/local/bin/thimbl --port 7979
+ExecStart=/usr/local/bin/thimbl serve --port 7979
 TemporaryFileSystem=%h:ro
 BindReadOnlyPaths=%h/.local/share/thimbl:%h/.local/share/thimbl
 NoNewPrivileges=yes
 ```
 
-Any other supervisor: the same cage with bubblewrap:
+The `BindReadOnlyPaths` form works as written in a **user** unit
+(systemd resolves the source inside `%h` before masking); a **system**
+unit cannot bind from inside the masked home (it fails with
+`226/NAMESPACE`), so there the real files live outside `$HOME` (for
+example `/srv/thimbl`) and are bound onto the fixed path.
+
+Any other supervisor: the same cage with bubblewrap. bwrap validates
+bind sources before applying mounts, so nothing may be sourced from
+inside the masked home; the card files live outside `$HOME` (here
+`$XDG_RUNTIME_DIR/thimbl`, created by `thimbl init --no-link` against
+that home or filled directly) and the binary is re-bound into a tmpfs:
 
 ```sh
 bwrap --unshare-all --share-net \
-  --ro-bind / / \
+  --ro-bind / / --dev /dev --proc /proc \
+  --tmpfs /tmp --ro-bind /usr/local/bin/thimbl /tmp/thimbl \
   --tmpfs "$HOME" \
-  --ro-bind "$HOME/.local/share/thimbl" "$HOME/.local/share/thimbl" \
-  -- thimbl --port 7979
+  --ro-bind "$XDG_RUNTIME_DIR/thimbl" "$HOME/.local/share/thimbl" \
+  -- /tmp/thimbl serve --port 7979
 ```
 
 The bubblewrap form needs unprivileged user namespaces enabled in the

@@ -1055,6 +1055,31 @@ fn output_names_serve(world: &mut FingerWorld) {
     );
 }
 
+#[when(expr = "thimbl runs with {string}")]
+fn thimbl_runs_with(world: &mut FingerWorld, args: String) {
+    let argv: Vec<&str> = args.split_whitespace().collect();
+    world.run_once(&argv);
+}
+
+#[then(expr = "it exits with code {int}")]
+fn exits_with_code(world: &mut FingerWorld, code: i64) {
+    assert_eq!(
+        world.run_exit_code(),
+        code as i32,
+        "the command exited with the wrong code: {out:?}",
+        out = world.run_output_text()
+    );
+}
+
+#[then(expr = "the output names the init command")]
+fn output_names_init(world: &mut FingerWorld) {
+    let out = world.run_output_text();
+    assert!(
+        out.contains("init"),
+        "usage output does not name the init command: {out:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // FingerInit: init command seeding, linking, and conflict policy
 // ---------------------------------------------------------------------------
@@ -1175,6 +1200,15 @@ fn init_output_names_plan_kept(world: &mut FingerWorld) {
     assert!(
         out.contains(".plan") && out.to_lowercase().contains("kept"),
         "init output does not name the plan kept: {out:?}"
+    );
+}
+
+#[then(expr = "the init output names the state file replaced")]
+fn init_output_names_state_file_replaced(world: &mut FingerWorld) {
+    let out = world.run_output_text();
+    assert!(
+        out.contains(".plan") && out.to_lowercase().contains("replaced"),
+        "init output does not name the state file replaced: {out:?}"
     );
 }
 

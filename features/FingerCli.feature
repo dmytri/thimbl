@@ -7,3 +7,19 @@ Feature: Finger command line
     When thimbl runs with no subcommand
     Then it exits non-zero
     And the output names the serve command
+
+  Scenario: The help flag prints usage and exits zero
+    When thimbl runs with "--help"
+    Then it exits with code 0
+    And the output names the serve command
+    And the output names the init command
+
+  Scenario: The serve command accepts the help flag
+    When thimbl runs with "serve --help"
+    Then it exits with code 0
+    And the output names the serve command
+
+  Scenario: The init command accepts the help flag
+    When thimbl runs with "init --help"
+    Then it exits with code 0
+    And the output names the init command

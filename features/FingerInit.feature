@@ -39,6 +39,7 @@ Feature: Finger init
     And the home has a plan file with content "Unpublished draft"
     When thimbl init runs with "--force"
     Then the state directory has the plan content "Unpublished draft"
+    And the init output names the state file replaced
     And the home plan links to the state file
 
   Scenario: A second init run reports kept and changes nothing
