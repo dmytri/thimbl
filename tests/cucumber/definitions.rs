@@ -1151,6 +1151,24 @@ fn init_output_names_home_plan(world: &mut FingerWorld) {
     );
 }
 
+#[then(expr = "the init output names the project and the plan")]
+fn init_output_names_project_and_plan(world: &mut FingerWorld) {
+    let out = world.run_output_text();
+    assert!(
+        out.contains(".project") && out.contains(".plan"),
+        "init output does not name the project and the plan: {out:?}"
+    );
+}
+
+#[then(expr = "the init output names the state directory")]
+fn init_output_names_state_dir(world: &mut FingerWorld) {
+    let out = world.run_output_text();
+    assert!(
+        out.contains(".local/share/thimbl"),
+        "init output does not name the state directory: {out:?}"
+    );
+}
+
 #[then(expr = "the init output names the plan kept")]
 fn init_output_names_plan_kept(world: &mut FingerWorld) {
     let out = world.run_output_text();

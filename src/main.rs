@@ -121,6 +121,7 @@ fn usage() {
 /// @planks("thimbl init runs with {string}")
 /// @planks("thimbl init has run")
 /// @planks("the init run exits with code {int}")
+/// @planks("the init output names the state directory")
 /// Establishes the card state directory from the home dot-files: each
 /// card file's state directory copy is seeded from the home dot-file
 /// when missing (empty when the home has none), never overwritten when
@@ -152,6 +153,7 @@ fn init_state_dir() -> ExitCode {
         eprintln!("thimbl: cannot create {}: {err}", state_dir.display());
         return ExitCode::FAILURE;
     }
+    eprintln!("thimbl: state directory {}", state_dir.display());
     let mut failed = false;
     for file in [".project", ".plan"] {
         if let Err(err) = establish_card(&home, &state_dir, file, force, link) {
@@ -181,6 +183,7 @@ fn init_state_dir() -> ExitCode {
 /// @planks("the init output names a conflict")
 /// @planks("the init output names the home plan")
 /// @planks("the init output names the plan kept")
+/// @planks("the init output names the project and the plan")
 /// One card file's establishment, per the [`init_state_dir`] policy.
 /// `Ok(())` when the home dot-file ends up linked (or left untouched by
 /// `--no-link`/a reported conflict); `Err` only on I/O failure.
@@ -214,11 +217,13 @@ fn establish_card(
         (None, None) => {
             fs::write(&state_file, b"")
                 .map_err(|err| format!("cannot create {}: {err}", state_file.display()))?;
+            eprintln!("thimbl: {}: seeded", state_file.display());
         }
         // The home has content the state directory lacks: seed it in.
         (Some(home_content), None) => {
             fs::write(&state_file, &home_content)
                 .map_err(|err| format!("cannot seed {}: {err}", state_file.display()))?;
+            eprintln!("thimbl: {}: seeded", state_file.display());
         }
         // The state file exists and is never overwritten. A differing
         // home regular file is a conflict: reported and left alone, or
@@ -247,6 +252,7 @@ fn establish_card(
         }
     }
     if !link {
+        eprintln!("thimbl: {}: left, --no-link", home_file.display());
         return Ok(());
     }
     match home_meta {
@@ -277,6 +283,11 @@ fn establish_card(
                 state_file.display()
             )
         })?;
+        eprintln!(
+            "thimbl: {}: linked to {}",
+            home_file.display(),
+            link_target.display()
+        );
     }
     #[cfg(not(unix))]
     {

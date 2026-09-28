@@ -11,11 +11,15 @@ Feature: Finger init
     And the state directory has the plan content "Ship the finger server"
     And the home project links to the state file
     And the home plan links to the state file
+    And the init output names the project and the plan
+    And the init output names the state directory
 
   Scenario: Init keeps an existing state file
     Given the state directory has a plan file with content "Already published"
     When thimbl init runs
     Then the state directory has the plan content "Already published"
+    And the init output names the home plan
+    And the init output names the state directory
 
   Scenario: Init reports a conflicting home plan and leaves it alone
     Given the state directory has a plan file with content "Published"
@@ -60,6 +64,8 @@ Feature: Finger init
     When thimbl init runs
     Then the state directory has an empty plan file
     And the home plan links to the state file
+    And the init output names the project and the plan
+    And the init output names the state directory
 
   Scenario: An empty state file serves a blank plan section
     Given the state directory has a plan file with content ""
@@ -73,3 +79,5 @@ Feature: Finger init
     When thimbl init runs with "--no-link"
     Then the state directory has the plan content "Ship the finger server"
     And the home plan is still a regular file
+    And the init output names the home plan
+    And the init output names the state directory
