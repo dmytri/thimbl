@@ -6,16 +6,18 @@ plus the project and plan text from one state directory. Identity is
 read once at startup; project and plan are re-read on every query, so
 edits show up immediately.
 
-## Running
+## Serving
 
 ```
-thimbl --port 7979
+thimbl serve --port 7979
 ```
+
+`thimbl serve` is the only serving entry point; bare `thimbl` prints
+usage and exits non-zero. `--port 0` binds an ephemeral port and prints
+`listening on <addr>`, which is what the test harness uses.
 
 The server binds `127.0.0.1` only. It is published by a TCP tunnel that
-forwards a public port to the loopback port. `--port 0` binds an
-ephemeral port and prints `listening on <addr>`, which is what the test
-harness uses.
+forwards a public port to the loopback port.
 
 ## Card files: the state directory
 
@@ -26,17 +28,31 @@ $HOME/.local/share/thimbl/.project
 $HOME/.local/share/thimbl/.plan
 ```
 
-The first run seeds the state directory: if it holds no files, thimbl
-copies an existing `~/.project` and `~/.plan` into it. After that,
-thimbl reads nothing else from the home; edit the files in the state
-directory directly.
-
-To migrate by hand instead:
+Set the directory up once, before enabling any supervisor:
 
 ```sh
-mkdir -p ~/.local/share/thimbl
-mv ~/.project ~/.plan ~/.local/share/thimbl/
+thimbl init
 ```
+
+`thimbl init` imports your classic `~/.project` / `~/.plan` into the
+state directory (never overwriting existing state files; a differing
+home file is reported as a conflict and left untouched unless
+`thimbl init --force` moves its content in), then points your home
+dot-files at the state files as relative symlinks. Editor and
+`finger`-adjacent muscle memory keep working; writes through the link
+land in the state directory and are served live. Run it twice and the
+second run reports `kept` and changes nothing. `--no-link` does the
+state-directory work only, for deployments that keep the real files
+elsewhere and bind them onto the fixed path (a system unit binding
+from `/srv` populates the bind source directly; `init` cannot see
+inside the cage, and a caged start over an empty state directory
+publishes the default card). Note that an empty state file serves a
+blank section, exactly like finger(1); only a missing file serves
+`No Plan.` / `No Project.`.
+
+`thimbl init` never binds a socket, and `serve` does no setup work:
+the split keeps setup runnable outside any cage, since a supervisor's
+sandboxing applies to its own pre-start hooks too.
 
 ## Isolation
 

@@ -16,10 +16,13 @@ Feature: Finger state directory
   Scenario: The first run seeds the state directory from the home dot-files
     Given the home has a project file with content "Deploying thimbl"
     And the home has a plan file with content "Ship the finger server"
-    And the finger server is running on an ephemeral port
+    When thimbl init runs
     Then the state directory has the project content "Deploying thimbl"
     And the state directory has the plan content "Ship the finger server"
-    When a client connects and sends the user's login name
+    And the home project links to the state file
+    And the home plan links to the state file
+    When the finger server is running on an ephemeral port
+    And a client connects and sends the user's login name
     Then the response contains a "Project:" section with "Deploying thimbl"
     And the response contains a "Plan:" section with "Ship the finger server"
 
@@ -30,6 +33,15 @@ Feature: Finger state directory
     When a client connects and sends the user's login name
     Then the response contains a "Plan:" section with "Already published"
     And the response does not contain "Stale draft"
+
+  Scenario: The serve command publishes the card
+    Given the home has a project file with content "Deploying thimbl"
+    And the home has a plan file with content "Ship the finger server"
+    And thimbl init has run
+    And the finger server is started with the serve command on port 0
+    When a client connects and sends the user's login name
+    Then the response contains a "Project:" section with "Deploying thimbl"
+    And the response contains a "Plan:" section with "Ship the finger server"
 
   Scenario: Plan edits in the state directory are served live
     Given the state directory has a plan file with content "Working draft"

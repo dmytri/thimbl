@@ -21,6 +21,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// How long a one-shot thimbl process (init, bare command) may run before
+/// the harness kills it: a command surface must exit, not listen.
+const LIVENESS_DEADLINE: Duration = Duration::from_secs(10);
+
 /// Stops the server and removes the temp HOME. Registered as an After hook.
 pub fn shutdown(world: &mut FingerWorld) {
     world.idle_clients.clear();
@@ -120,6 +124,16 @@ pub struct FingerWorld {
     /// Server CPU-seconds consumed over the idle window of the
     /// no-CPU-burn scenario, captured by the `When` step.
     pub idle_cpu_seconds: Option<f64>,
+    /// Exit status of the last one-shot thimbl process a step ran (the
+    /// init and command-line runs); `None` when the process was killed
+    /// by the liveness guard for refusing to exit.
+    pub run_exit: Option<i32>,
+    /// Combined stdout and stderr of the last one-shot thimbl process a
+    /// step ran.
+    pub run_output: Option<String>,
+    /// The outside file a home dot-file symlink points at when a scenario
+    /// stages "a symlink to elsewhere".
+    pub plan_elsewhere: Option<PathBuf>,
 }
 
 /// A running thimbl server process and the port it bound.
@@ -279,7 +293,7 @@ impl FingerWorld {
         }
         let home = self.temp_home();
         let mut cmd = Command::new(server_binary());
-        cmd.env("HOME", &home);
+        cmd.env("HOME", &home).arg("serve");
         if let Some(port) = port_arg {
             cmd.arg("--port").arg(port);
         }
@@ -289,6 +303,7 @@ impl FingerWorld {
             // server's pid and signals reach the server directly.
             let binary = server_binary();
             let mut script = format!("ulimit -n {limit} && exec {:?}", binary);
+            script.push_str(" serve");
             if let Some(port) = port_arg {
                 script.push_str(&format!(" --port {port}"));
             }
@@ -415,6 +430,101 @@ impl FingerWorld {
             .lock()
             .map(|log| log.clone())
             .unwrap_or_default()
+    }
+
+    /// Removes one card file (`.project`/`.plan`) from the HOME root
+    /// without creating the directory: the "no home dot-file" state.
+    pub fn remove_home_file(&mut self, file: &str) {
+        let home = self.temp_home();
+        match std::fs::remove_file(home.join(file)) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => panic!("remove {file} from the HOME root: {err}"),
+        }
+    }
+
+    /// Runs the thimbl binary once against the temp HOME (as `thimbl init`
+    /// or the bare command does), captures its exit status and combined
+    /// output, and kills it if it outlives the liveness deadline: a
+    /// command surface that binds a socket instead of exiting fails
+    /// loudly rather than wedging the run.
+    pub fn run_once(&mut self, args: &[&str]) {
+        let home = self.temp_home();
+        let mut cmd = Command::new(server_binary());
+        cmd.env("HOME", &home).args(args);
+        let mut child = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn thimbl one-shot process");
+        let deadline = Instant::now() + LIVENESS_DEADLINE;
+        let (out, status) = loop {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                self.run_exit = None;
+                let mut text = format!(
+                    "thimbl ran with {args:?} and did not exit within \
+                     {} seconds (a command that listens is not a command)",
+                    LIVENESS_DEADLINE.as_secs()
+                );
+                if let Ok(piped) = child.wait_with_output() {
+                    text.push_str(&String::from_utf8_lossy(&piped.stdout));
+                    text.push_str(&String::from_utf8_lossy(&piped.stderr));
+                }
+                self.run_output = Some(text);
+                return;
+            }
+            if let Some(status) = child
+                .try_wait()
+                .expect("wait on the thimbl one-shot process")
+            {
+                break (
+                    child.wait_with_output().expect("collect thimbl output"),
+                    status,
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        self.run_exit = status.code();
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        self.run_output = Some(text);
+    }
+
+    /// The captured output of the last one-shot thimbl run.
+    pub fn run_output_text(&self) -> String {
+        self.run_output.clone().unwrap_or_default()
+    }
+
+    /// The captured exit code of the last one-shot thimbl run; killed
+    /// runs carry `None` and name the liveness guard.
+    pub fn run_exit_code(&self) -> i32 {
+        self.run_exit.unwrap_or_else(|| {
+            panic!(
+                "the thimbl process had no exit code — it was killed after \
+                 refusing to exit within {} seconds",
+                LIVENESS_DEADLINE.as_secs()
+            )
+        })
+    }
+
+    /// Makes one card file (`.project`/`.plan`) in the HOME root a
+    /// symlink pointing at a file outside it, recording the outside
+    /// target for the "still a symlink to elsewhere" assertion.
+    pub fn stage_home_symlink_to_elsewhere(&mut self, file: &str) {
+        let home = self.temp_home();
+        let elsewhere = home.join("elsewhere").join(file);
+        std::fs::create_dir_all(elsewhere.parent().expect("elsewhere parent"))
+            .expect("create elsewhere directory");
+        std::fs::write(&elsewhere, "Sitting elsewhere").expect("write elsewhere target");
+        let link = home.join(file);
+        let _ = std::fs::remove_file(&link);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&elsewhere, &link).expect("create elsewhere symlink");
+        #[cfg(not(unix))]
+        panic!("symlink scenarios require a POSIX filesystem");
+        self.plan_elsewhere = Some(elsewhere);
     }
 
     /// Stops the running server and starts a fresh one under the given

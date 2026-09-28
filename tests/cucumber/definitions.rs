@@ -961,9 +961,13 @@ fn state_plan_changed(world: &mut FingerWorld, content: String) {
 
 /// Asserts the card files sit at the fixed state directory path the spec
 /// pins: `$HOME/.local/share/thimbl`, read from the temp HOME the server
-/// was started with. `expr =` cannot express the literal step: a Cucumber
-/// expression treats `/` as an alternation separator and a bare `\"` as a
-/// parse error, so the step is bound as a fully anchored regex instead.
+/// was started with. Under the init/serve split the server creates no
+/// card files, so the assertion covers the paths the scenario pins: each
+/// card file is absent, and the serving of `No Project.`/`No Plan.` in
+/// the captured response proves the server read exactly those paths.
+/// `expr =` cannot express the literal step: a Cucumber expression
+/// treats `/` as an alternation separator and a bare `\"` as a parse
+/// error, so the step is bound as a fully anchored regex instead.
 #[then(regex = "^\\\"\\$HOME/\\.local/share/thimbl\\\" contains the card files$")]
 fn state_dir_contains_card_files(world: &mut FingerWorld) {
     let home = world
@@ -978,15 +982,28 @@ fn state_dir_contains_card_files(world: &mut FingerWorld) {
         ("Plan", state_dir.join(".plan"), plan),
     ];
     for (label, path, content) in expected {
-        let read = std::fs::read_to_string(&path).unwrap_or_else(|err| {
-            panic!("read the {label} card file at {}: {err}", path.display())
-        });
-        assert_eq!(
-            read,
-            content.unwrap_or_default(),
-            "the {label} card file does not carry the fixture content"
-        );
+        match (content, std::fs::read_to_string(&path)) {
+            (Some(expected), Ok(read)) => assert_eq!(
+                read, expected,
+                "the {label} card file does not carry the fixture content"
+            ),
+            (Some(expected), Err(err)) => panic!(
+                "read the {label} card file at {}: {err} (expected {expected:?})",
+                path.display()
+            ),
+            (None, Ok(read)) => panic!(
+                "the {label} card file exists at {} without a fixture: {read:?}",
+                path.display()
+            ),
+            (None, Err(err)) if err.kind() == std::io::ErrorKind::NotFound => {}
+            (None, Err(err)) => panic!("read the {label} card file at {}: {err}", path.display()),
+        }
     }
+    let text = world.response_text.clone().expect("a query was answered");
+    assert!(
+        text.contains("No Project.") && text.contains("No Plan."),
+        "the served card does not read the pinned state-directory paths: {text:?}"
+    );
 }
 
 #[then(expr = "the response contains a {string} section with the current plan")]
@@ -1008,4 +1025,199 @@ fn response_plan_is_edited(world: &mut FingerWorld, section: String) {
         served, edited,
         "served {section:?} section does not carry the current state-directory plan"
     );
+}
+
+// ---------------------------------------------------------------------------
+// FingerCli: explicit command surface
+// ---------------------------------------------------------------------------
+
+#[when("thimbl runs with no subcommand")]
+fn bare_thimbl(world: &mut FingerWorld) {
+    world.run_once(&[]);
+}
+
+#[then("it exits non-zero")]
+fn exits_non_zero(world: &mut FingerWorld) {
+    assert_ne!(
+        world.run_exit_code(),
+        0,
+        "the bare command exited zero: {out:?}",
+        out = world.run_output_text()
+    );
+}
+
+#[then("the output names the serve command")]
+fn output_names_serve(world: &mut FingerWorld) {
+    let out = world.run_output_text();
+    assert!(
+        out.contains("serve"),
+        "usage output does not name the serve command: {out:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// FingerInit: init command seeding, linking, and conflict policy
+// ---------------------------------------------------------------------------
+
+#[given(expr = "the home has no plan file")]
+fn home_no_plan(world: &mut FingerWorld) {
+    world.remove_home_file(".plan");
+}
+
+#[when("thimbl init runs")]
+fn init_runs(world: &mut FingerWorld) {
+    world.run_once(&["init"]);
+}
+
+#[when(expr = "thimbl init runs with {string}")]
+fn init_runs_with(world: &mut FingerWorld, flag: String) {
+    world.run_once(&["init", &flag]);
+}
+
+#[when("thimbl init runs again")]
+fn init_runs_again(world: &mut FingerWorld) {
+    world.run_once(&["init"]);
+}
+
+#[given("thimbl init has run")]
+fn init_has_run(world: &mut FingerWorld) {
+    world.run_once(&["init"]);
+    assert_eq!(
+        world.run_exit_code(),
+        0,
+        "init must succeed before the scenario continues: {out:?}",
+        out = world.run_output_text()
+    );
+}
+
+#[given("the home plan is a symlink to elsewhere")]
+fn home_plan_symlink_elsewhere(world: &mut FingerWorld) {
+    world.stage_home_symlink_to_elsewhere(".plan");
+}
+
+#[then(expr = "the home project links to the state file")]
+fn home_project_links(world: &mut FingerWorld) {
+    home_links_to_state(world, ".project");
+}
+
+#[then(expr = "the home plan links to the state file")]
+fn home_plan_links(world: &mut FingerWorld) {
+    home_links_to_state(world, ".plan");
+}
+
+#[then("the home plan is still a regular file")]
+fn home_plan_regular(world: &mut FingerWorld) {
+    let path = world.temp_home().join(".plan");
+    let meta = std::fs::symlink_metadata(&path)
+        .unwrap_or_else(|err| panic!("read home .plan at {}: {err}", path.display()));
+    assert!(
+        !meta.file_type().is_symlink(),
+        "home .plan became a symlink"
+    );
+    assert!(
+        meta.is_file(),
+        "home .plan is not a regular file: {:?}",
+        meta.file_type()
+    );
+}
+
+#[then("the home plan is still a symlink to elsewhere")]
+fn home_plan_still_elsewhere(world: &mut FingerWorld) {
+    let path = world.temp_home().join(".plan");
+    let target = std::fs::read_link(&path)
+        .unwrap_or_else(|err| panic!("home .plan is not a symlink: {err}"));
+    let expected = world
+        .plan_elsewhere
+        .clone()
+        .expect("the scenario staged an elsewhere target");
+    assert_eq!(target, expected, "home .plan symlink points somewhere new");
+}
+
+#[then(expr = "the init output names a conflict")]
+fn init_output_names_conflict(world: &mut FingerWorld) {
+    let out = world.run_output_text();
+    assert!(
+        out.to_lowercase().contains("conflict"),
+        "init output does not name a conflict: {out:?}"
+    );
+}
+
+#[then(expr = "the init output names the home plan")]
+fn init_output_names_home_plan(world: &mut FingerWorld) {
+    let out = world.run_output_text();
+    assert!(
+        out.contains(".plan"),
+        "init output does not name the home plan file: {out:?}"
+    );
+}
+
+#[then(expr = "the init output names the plan kept")]
+fn init_output_names_plan_kept(world: &mut FingerWorld) {
+    let out = world.run_output_text();
+    assert!(
+        out.contains(".plan") && out.to_lowercase().contains("kept"),
+        "init output does not name the plan kept: {out:?}"
+    );
+}
+
+#[then(expr = "the init run exits with code {int}")]
+fn init_exits_with_code(world: &mut FingerWorld, code: i64) {
+    assert_eq!(
+        world.run_exit_code(),
+        code as i32,
+        "init exited with the wrong code: {out:?}",
+        out = world.run_output_text()
+    );
+}
+
+#[then("the state directory has an empty plan file")]
+fn state_plan_file_empty(world: &mut FingerWorld) {
+    let path = world.state_dir().join(".plan");
+    let read = std::fs::read(&path)
+        .unwrap_or_else(|err| panic!("read state .plan at {}: {err}", path.display()));
+    assert!(read.is_empty(), "state .plan is not empty: {read:?}");
+}
+
+/// Reads where the HOME dot-file links and asserts it resolves to the
+/// state directory's own card file.
+fn home_links_to_state(world: &mut FingerWorld, file: &str) {
+    let home = world.temp_home();
+    let link = home.join(file);
+    let target = std::fs::read_link(&link)
+        .unwrap_or_else(|err| panic!("home {file} is not a symlink: {err}"));
+    let resolved = if target.is_absolute() {
+        target
+    } else {
+        home.join(target)
+    };
+    let state_file = world.state_dir().join(file);
+    let canon_link = resolved
+        .canonicalize()
+        .unwrap_or_else(|err| panic!("resolve home {file} link: {err}"));
+    let canon_state = state_file
+        .canonicalize()
+        .unwrap_or_else(|err| panic!("resolve state {file}: {err}"));
+    assert_eq!(
+        canon_link, canon_state,
+        "home {file} does not link to the state file"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// FingerStateDir: server start under the init/serve split
+// ---------------------------------------------------------------------------
+
+// The scenario restates the running-server state with a `When` keyword
+// after the init steps; cucumber derives the step kind from the line's
+// own keyword, so the same text binds under both keywords.
+#[when("the finger server is running on an ephemeral port")]
+fn server_running_when(world: &mut FingerWorld) {
+    let port = world.start_server(None);
+    assert_ne!(port, 0, "ephemeral port must not be 0");
+}
+
+#[given("the finger server is started with the serve command on port 0")]
+fn server_started_serve_command(world: &mut FingerWorld) {
+    let port = world.start_server(Some("0"));
+    let _ = port;
 }

@@ -1,14 +1,16 @@
 //! thimbl — a single-user RFC 1288 finger server.
 //!
-//! Serves exactly one card: the identity of the user running the server,
-//! taken from that user's own `/etc/passwd` line, plus the `.project`
-//! and `.plan` card files in the state directory
+//! The command surface is explicit: `thimbl init` establishes the card
+//! state directory, `thimbl serve` serves it, and bare `thimbl` prints
+//! usage and exits non-zero.
+//!
+//! Serving answers with exactly one card: the identity of the user
+//! running the server, taken from that user's own `/etc/passwd` line,
+//! plus the `.project` and `.plan` card files in the state directory
 //! (`$HOME/.local/share/thimbl`). The card files are re-read from the
-//! state directory on every query, so edits show up immediately. On
-//! first run the server establishes the state directory: a missing card
-//! file is seeded from the `~/.project` or `~/.plan` dot-file in the
-//! `HOME` root when present, else created empty; existing
-//! state-directory files are never overwritten.
+//! state directory on every query, so edits show up immediately. The
+//! server itself does no setup work: establishment is `init`'s job, so
+//! setup stays runnable outside any supervisor sandbox.
 //!
 //! Over TCP the server answers the RFC 1288 `{C}` query grammar:
 //!
@@ -68,14 +70,232 @@ const HOST: &str = "127.0.0.1";
 /// server down cleanly. Only an atomic store runs inside the signal handler.
 static TERMINATED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
 
+/// @planks("thimbl runs with no subcommand")
+/// @planks("it exits non-zero")
+/// @planks("the output names the serve command")
+/// @planks("the finger server is started with the serve command on port 0")
+/// Dispatches the explicit command surface: `init` establishes the card
+/// state directory, `serve` serves it (also the port-parse error path),
+/// and bare `thimbl` or an unknown subcommand prints usage and exits
+/// non-zero — serving is never implicit.
 fn main() -> ExitCode {
-    match port_from_args() {
-        Ok(port) => serve(port),
-        Err(message) => {
-            eprintln!("thimbl: {message}");
-            eprintln!("usage: thimbl [--port PORT]");
+    match env::args().nth(1).as_deref() {
+        // Bare `thimbl` and anything unrecognized are refusals, not
+        // servers: serving is deliberate, behind the `serve` subcommand.
+        Some("serve") => match port_from_args() {
+            Ok(port) => serve(port),
+            Err(message) => {
+                eprintln!("thimbl: {message}");
+                usage();
+                ExitCode::from(2)
+            }
+        },
+        Some("init") => init_state_dir(),
+        Some(unknown) => {
+            eprintln!(
+                "thimbl: {}{unknown:?}",
+                if unknown == "--port" || unknown.starts_with("--port=") {
+                    "serving needs the serve subcommand: "
+                } else {
+                    "unknown subcommand "
+                },
+            );
+            usage();
             ExitCode::from(2)
         }
+        None => {
+            usage();
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// Prints the command surface, naming `serve` as the serving entry point.
+fn usage() {
+    eprintln!("usage: thimbl init [--force] [--no-link]");
+    eprintln!("       thimbl serve [--port PORT]");
+}
+
+/// @planks("thimbl init runs")
+/// @planks("thimbl init runs again")
+/// @planks("thimbl init runs with {string}")
+/// @planks("thimbl init has run")
+/// @planks("the init run exits with code {int}")
+/// Establishes the card state directory from the home dot-files: each
+/// card file's state directory copy is seeded from the home dot-file
+/// when missing (empty when the home has none), never overwritten when
+/// present; the home dot-file is then pointed at the state file as a
+/// relative symlink unless `--no-link` asks otherwise. A home regular
+/// file whose content differs from the state file is a conflict: it is
+/// reported and left alone, or with `--force` its content is moved into
+/// the state file and the link replaces it.
+fn init_state_dir() -> ExitCode {
+    let mut force = false;
+    let mut link = true;
+    for arg in env::args().skip(2) {
+        match arg.as_str() {
+            "--force" => force = true,
+            "--no-link" => link = false,
+            other => {
+                eprintln!("thimbl: unknown argument {other:?}");
+                usage();
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
+        eprintln!("thimbl: HOME is not set");
+        return ExitCode::FAILURE;
+    };
+    let state_dir = home.join(".local/share/thimbl");
+    if let Err(err) = fs::create_dir_all(&state_dir) {
+        eprintln!("thimbl: cannot create {}: {err}", state_dir.display());
+        return ExitCode::FAILURE;
+    }
+    let mut failed = false;
+    for file in [".project", ".plan"] {
+        if let Err(err) = establish_card(&home, &state_dir, file, force, link) {
+            eprintln!("thimbl: {err}");
+            failed = true;
+        }
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// @planks("the home has a project file with content {string}")
+/// @planks("the home has a plan file with content {string}")
+/// @planks("the home has no plan file")
+/// @planks("the state directory has a plan file with content {string}")
+/// @planks("the state directory has no plan file")
+/// @planks("the state directory has the project content {string}")
+/// @planks("the state directory has the plan content {string}")
+/// @planks("the state directory has an empty plan file")
+/// @planks("the home project links to the state file")
+/// @planks("the home plan links to the state file")
+/// @planks("the home plan is still a regular file")
+/// @planks("the home plan is still a symlink to elsewhere")
+/// @planks("the init output names a conflict")
+/// @planks("the init output names the home plan")
+/// @planks("the init output names the plan kept")
+/// One card file's establishment, per the [`init_state_dir`] policy.
+/// `Ok(())` when the home dot-file ends up linked (or left untouched by
+/// `--no-link`/a reported conflict); `Err` only on I/O failure.
+fn establish_card(
+    home: &std::path::Path,
+    state_dir: &std::path::Path,
+    file: &str,
+    force: bool,
+    link: bool,
+) -> Result<(), String> {
+    let home_file = home.join(file);
+    let state_file = state_dir.join(file);
+    let home_meta = fs::symlink_metadata(&home_file);
+    let home_link = home_meta
+        .as_ref()
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false);
+    let home_bytes = if home_link {
+        None
+    } else {
+        fs::read(&home_file).ok()
+    };
+    let state_bytes = fs::read(&state_file).ok();
+    // The home regular file counts as a conflict only when its content
+    // differs from what the state file carries; a home file whose content
+    // was just seeded in (or already matched) is simply linked over.
+    let mut conflict = false;
+    match (home_bytes, state_bytes) {
+        // Nothing in the home, nothing in the state directory: the state
+        // file is created empty and the link is made.
+        (None, None) => {
+            fs::write(&state_file, b"")
+                .map_err(|err| format!("cannot create {}: {err}", state_file.display()))?;
+        }
+        // The home has content the state directory lacks: seed it in.
+        (Some(home_content), None) => {
+            fs::write(&state_file, &home_content)
+                .map_err(|err| format!("cannot seed {}: {err}", state_file.display()))?;
+        }
+        // The state file exists and is never overwritten. A differing
+        // home regular file is a conflict: reported and left alone, or
+        // with `--force` its content is kept by moving it into the state
+        // file.
+        (Some(home_content), Some(state_content)) => {
+            if home_content != state_content {
+                if force {
+                    fs::write(&state_file, &home_content)
+                        .map_err(|err| format!("cannot seed {}: {err}", state_file.display()))?;
+                } else {
+                    conflict = true;
+                    eprintln!(
+                        "thimbl: conflict: {} differs from {}",
+                        home_file.display(),
+                        state_file.display(),
+                    );
+                }
+            }
+        }
+        // The state file exists (whatever its content, including empty)
+        // and the home has no regular file: the state file is kept and
+        // named so.
+        (None, Some(_)) => {
+            eprintln!("thimbl: {}: kept", state_file.display());
+        }
+    }
+    if !link {
+        return Ok(());
+    }
+    match home_meta {
+        // Already a symlink: leave it alone whatever it points at.
+        Ok(meta) if meta.file_type().is_symlink() => {
+            eprintln!(
+                "thimbl: {}: already a symlink, left alone",
+                home_file.display()
+            );
+            return Ok(());
+        }
+        // A conflicting home regular file keeps the home file unless
+        // `--force` relinks it; the report above already named it.
+        Ok(_) if conflict && !force => {
+            return Ok(());
+        }
+        // Replace any existing home entry with the link.
+        Ok(_) | Err(_) => {}
+    }
+    let link_target = relative_link(&home_file, &state_file);
+    #[cfg(unix)]
+    {
+        let _ = fs::remove_file(&home_file);
+        std::os::unix::fs::symlink(&link_target, &home_file).map_err(|err| {
+            format!(
+                "cannot link {} to {}: {err}",
+                home_file.display(),
+                state_file.display()
+            )
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = link_target;
+        return Err(format!(
+            "linking {} requires a POSIX filesystem",
+            home_file.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The link text that points `from` at `to`: relative when `to` sits
+/// below `from`'s parent, absolute otherwise.
+fn relative_link(from: &std::path::Path, to: &std::path::Path) -> PathBuf {
+    let link_dir = from.parent().unwrap_or_else(|| std::path::Path::new(""));
+    match to.strip_prefix(link_dir) {
+        Ok(rest) => rest.to_path_buf(),
+        Err(_) => to.to_path_buf(),
     }
 }
 
@@ -93,7 +313,7 @@ fn install_sigterm_handler() -> io::Result<()> {
 /// Parses the optional `--port N` / `--port=N` argument. Defaults to 0 so
 /// the kernel picks a free port; the resolved port is printed at startup.
 fn port_from_args() -> Result<u16, String> {
-    let mut args = env::args().skip(1);
+    let mut args = env::args().skip(2);
     let mut port = 0;
     while let Some(arg) = args.next() {
         let raw = if arg == "--port" {
@@ -117,7 +337,6 @@ fn serve(port: u16) -> ExitCode {
     install_sigterm_handler()
         .unwrap_or_else(|err| eprintln!("thimbl: cannot arm SIGTERM handler: {err}"));
     let finger = Arc::new(Finger::current());
-    finger.seed_state_dir();
     let listener = match TcpListener::bind((HOST, port)) {
         Ok(listener) => listener,
         Err(err) => {
@@ -285,7 +504,6 @@ fn read_query(stream: &mut TcpStream) -> io::Result<Option<String>> {
 /// the card files are read from. Shared across connection threads.
 struct Finger {
     identity: Identity,
-    home: Option<PathBuf>,
     state_dir: Option<PathBuf>,
 }
 
@@ -297,35 +515,7 @@ impl Finger {
         let state_dir = home.as_deref().map(|home| home.join(".local/share/thimbl"));
         Self {
             identity: current_identity(),
-            home,
             state_dir,
-        }
-    }
-
-    /// @planks("the state directory has the project content {string}")
-    /// @planks("the state directory has the plan content {string}")
-    /// @planks("the state directory plan is changed to {string}")
-    /// Establishes the card files in the state directory on first run:
-    /// a missing card file is seeded from the HOME-root dot-file when
-    /// present, else created empty. Existing state-directory files are
-    /// never overwritten, and the copy happens once at startup, so later
-    /// HOME-root edits and deletions leave the served card untouched.
-    fn seed_state_dir(&self) {
-        let Some(state_dir) = &self.state_dir else {
-            return;
-        };
-        for file in [".project", ".plan"] {
-            let target = state_dir.join(file);
-            if target.exists() {
-                continue;
-            }
-            let content = self
-                .home
-                .as_deref()
-                .and_then(|home| fs::read(home.join(file)).ok())
-                .unwrap_or_default();
-            let _ = fs::create_dir_all(state_dir);
-            let _ = fs::write(&target, content);
         }
     }
 
@@ -385,8 +575,9 @@ impl Finger {
     /// @planks("the response contains the plan content {string}")
     /// @planks("the plan file content is changed to {string}")
     /// @planks("the response does not contain {string}")
-    /// Appends one named section: the live non-empty file content when
-    /// present, the fixed notice for a missing or empty card file.
+    /// Appends one named section: the live file content when the file is
+    /// present (an empty file serves an empty body, as finger(1) does),
+    /// the fixed notice only for a missing card file.
     fn append_section(&self, card: &mut String, header: &str, file: &str, absent: &str) {
         card.push_str(header);
         card.push(':');
@@ -394,7 +585,6 @@ impl Finger {
         let content = self.state_dir.as_deref().and_then(|state_dir| {
             fs::read(state_dir.join(file))
                 .ok()
-                .filter(|bytes| !bytes.is_empty())
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         });
         match content {
