@@ -37,6 +37,10 @@ pub fn shutdown(world: &mut FingerWorld) {
     world.step_definition_path = None;
     world.plank_traces.clear();
     world.step_patterns.clear();
+    world.step_bindings.clear();
+    world.coverage_percent = None;
+    world.coverage_report = None;
+    world.coverage_dir = None;
     if let Some(server) = world.server.as_mut() {
         server.terminate();
     }
@@ -103,13 +107,18 @@ pub struct FixtureFiles {
     pub user: Option<String>,
 }
 
-/// One `@planks` token the conformance join found in the implementation
-/// tree: the payload string when the annotation carries one, the file
-/// and line it sits on, and whether it sits in a docblock attached to a
-/// declaration.
+/// One `@planks`/`@planks-provisional` token the conformance join found
+/// in the implementation tree: the payload string when the annotation
+/// carries one, the file and line it sits on, and whether it sits in a
+/// docblock attached to a declaration. A provisional token's payload
+/// names a `@captain` scenario reference instead of a step pattern, and
+/// is carried in `provisional` so the join checks keep the two forms
+/// apart.
 #[derive(Clone, Debug)]
 pub struct PlankTrace {
     pub pattern: Option<String>,
+    /// The `@planks-provisional(...)` reference, `Some` only for that form.
+    pub provisional: Option<String>,
     pub file: String,
     pub line: usize,
     pub in_declaration_docblock: bool,
@@ -165,6 +174,16 @@ pub struct FingerWorld {
     pub plank_traces: Vec<PlankTrace>,
     /// Step patterns the step definitions file binds, as declared.
     pub step_patterns: Vec<String>,
+    /// Step bindings with their binding keyword, as the inverse plank
+    /// join reads them.
+    pub step_bindings: Vec<(&'static str, String)>,
+    /// The measured line coverage of the implementation the coverage
+    /// scenario's run reports, as a fraction.
+    pub coverage_percent: Option<f64>,
+    /// The coverage report the coverage scenario's run wrote.
+    pub coverage_report: Option<PathBuf>,
+    /// The implementation directory the coverage scenario measures.
+    pub coverage_dir: Option<String>,
 }
 
 /// A running thimbl server process and the port it bound.
@@ -654,28 +673,52 @@ fn nanos() -> u128 {
         .unwrap_or(0)
 }
 
-/// Locates the compiled thimbl binary (workspace target dir).
+/// Locates the compiled thimbl binary to spawn. `cargo-llvm-cov` builds
+/// instrumented binaries under `target/llvm-cov-target` and exports
+/// `LLVM_PROFILE_FILE` so the coverage run measures spawned children;
+/// under it both are honoured, so the coverage run measures the real
+/// serving binary rather than the uninstrumented `target/debug` one.
+/// `THIMBL_BIN` overrides the location for any run.
 fn server_binary() -> PathBuf {
+    if let Some(path) = std::env::var_os("THIMBL_BIN") {
+        let path = PathBuf::from(path);
+        assert!(path.is_file(), "THIMBL_BIN binary {path:?} not present");
+        return path;
+    }
     // When run under `cargo test`, CARGO_BIN_EXE_ variables point at the
     // freshly built binaries — but only for libtest-harness targets.
     // For a harness=false integration test we resolve via the target dir.
-    let manifest_dir =
-        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo");
+    let manifest_dir = PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
+    );
     let profile = if cfg!(debug_assertions) {
         "debug"
     } else {
         "release"
     };
-    let path = PathBuf::from(manifest_dir)
-        .join("target")
-        .join(profile)
-        .join("thimbl");
-    if path.exists() {
-        return path;
+    let plain = manifest_dir.join("target").join(profile).join("thimbl");
+    // Under cargo-llvm-cov the profile dir is llvm-cov-target's, and the
+    // binary there is the instrumented one the coverage run must measure.
+    if let Ok(profile_file) = std::env::var("LLVM_PROFILE_FILE")
+        && let Some((target, _)) = profile_file.rsplit_once("/thimbl-")
+    {
+        let cov = PathBuf::from(target).join(profile).join("thimbl");
+        if cov.is_file() {
+            return cov;
+        }
+        if !plain.is_file() {
+            panic!(
+                "thimbl binary not found at {} — build it first (cargo build)",
+                plain.display()
+            );
+        }
+    }
+    if plain.is_file() {
+        return plain;
     }
     panic!(
         "thimbl binary not found at {} — build it first (cargo build)",
-        path.display()
+        plain.display()
     );
 }
 

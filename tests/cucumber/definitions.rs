@@ -1489,21 +1489,26 @@ fn stdio_exit_zero(world: &mut FingerWorld, code: i64) {
 // HarborConformance: the plank join
 // ---------------------------------------------------------------------------
 
-/// The payload of one `@planks(...)` annotation line, `Some` when the
-/// line carries a plank token: the payload string for a docblock
-/// annotation, and `None` for a token outside a docblock, so the form
-/// check reports the out-of-docblock token itself. A payload with no
-/// closing parenthesis is carried as it stands: it names no current
-/// pattern and reddens the join.
-fn plank_payload(line: &str) -> Option<Option<String>> {
+/// The payload of one plank annotation line, `Some` when the line
+/// carries a plank token: the payload string for a docblock annotation
+/// and `None` for a token outside a docblock, so the form check reports
+/// the out-of-docblock token itself. `@planks-provisional(...)` is
+/// reported likewise, so the provisional check can find it; a payload
+/// with no closing parenthesis is carried as it stands: it names no
+/// current pattern and reddens the join.
+fn plank_payload(line: &str) -> Option<(Option<String>, Option<String>)> {
     let trimmed = line.trim_start();
     if let Some(rest) = trimmed.strip_prefix("///") {
+        if let Some(rest) = rest.trim_start().strip_prefix("@planks-provisional(") {
+            let payload = rest.strip_suffix(')').unwrap_or(rest);
+            return Some((None, Some(payload.trim().trim_matches('"').to_string())));
+        }
         let rest = rest.trim_start().strip_prefix("@planks(")?;
         let payload = rest.strip_suffix(')').unwrap_or(rest);
-        return Some(Some(payload.trim().trim_matches('"').to_string()));
+        return Some((Some(payload.trim().trim_matches('"').to_string()), None));
     }
-    if trimmed.contains("@planks(") {
-        return Some(None);
+    if trimmed.contains("@planks(") || trimmed.contains("@planks-provisional(") {
+        return Some((None, None));
     }
     None
 }
@@ -1531,17 +1536,31 @@ fn docblock_attaches(source: &str, offset: usize) -> bool {
 
 /// Parses the step patterns from the step-definitions file: the string
 /// literal of every `#[given(...)]`, `#[when(...)]`, `#[then(...)]`
-/// binding, exactly as each attribute declares it. Every binding in the
-/// file sits on one line, so the parse is line-by-line and a pattern
-/// containing bracket characters cannot corrupt the scan.
+/// binding, exactly as each attribute declares it. Every binding in
+/// the file sits on one line, so the parse is line-by-line and a
+/// pattern containing bracket characters cannot corrupt the scan.
 fn parse_step_patterns(source: &str) -> Vec<String> {
-    let mut patterns = Vec::new();
+    parse_step_bindings(source)
+        .into_iter()
+        .map(|(_, pattern)| pattern)
+        .collect()
+}
+
+/// Parses the step bindings from the step-definitions file: the binding
+/// keyword and the string literal of each `#[given(...)]`,
+/// `#[when(...)]`, `#[then(...)]` attribute, exactly as each attribute
+/// declares it. The keyword tells the inverse plank join which
+/// bindings are setup steps, which the Planking agreement holds out of
+/// the plank obligation.
+fn parse_step_bindings(source: &str) -> Vec<(&'static str, String)> {
+    let mut bindings = Vec::new();
     for line in source.lines() {
         let trimmed = line.trim_start();
-        let Some(head) = ["given", "when", "then"]
-            .iter()
-            .find_map(|keyword| trimmed.strip_prefix(&format!("#[{keyword}(")))
-        else {
+        let Some((keyword, head)) = ["given", "when", "then"].iter().find_map(|keyword| {
+            trimmed
+                .strip_prefix(&format!("#[{keyword}("))
+                .map(|rest| (*keyword, rest))
+        }) else {
             continue;
         };
         let head = head
@@ -1549,10 +1568,10 @@ fn parse_step_patterns(source: &str) -> Vec<String> {
             .or_else(|| head.strip_prefix("regex = "))
             .unwrap_or(head);
         if let Some(pattern) = attribute_string_literal(head) {
-            patterns.push(pattern);
+            bindings.push((keyword, pattern));
         }
     }
-    patterns
+    bindings
 }
 
 /// The string literal at the head of a step-binding attribute: a raw
@@ -1597,6 +1616,7 @@ fn join_planks_against_steps(world: &mut FingerWorld) {
     let source = std::fs::read_to_string(&definitions_path)
         .unwrap_or_else(|err| panic!("read {definitions_path}: {err}"));
     world.step_patterns = parse_step_patterns(&source);
+    world.step_bindings = parse_step_bindings(&source);
     assert!(
         !world.step_patterns.is_empty(),
         "no step patterns parsed from {definitions_path}"
@@ -1609,9 +1629,10 @@ fn join_planks_against_steps(world: &mut FingerWorld) {
         let content =
             std::fs::read_to_string(&file).unwrap_or_else(|err| panic!("read {file}: {err}"));
         for (offset, line) in content.lines().enumerate() {
-            if let Some(payload) = plank_payload(line) {
+            if let Some((pattern, provisional)) = plank_payload(line) {
                 traces.push(PlankTrace {
-                    pattern: payload,
+                    pattern,
+                    provisional,
                     file: file.clone(),
                     line: offset + 1,
                     in_declaration_docblock: docblock_attaches(&content, offset),
@@ -1646,4 +1667,221 @@ fn every_plank_in_docblock(world: &mut FingerWorld) {
             trace.file, trace.line
         );
     }
+}
+
+#[then("every provisional plank names a scenario that still carries @captain")]
+fn provisional_planks_still_captain(world: &mut FingerWorld) {
+    for trace in &world.plank_traces {
+        let Some(reference) = &trace.provisional else {
+            continue;
+        };
+        assert!(
+            reference_captain_tagged(reference),
+            "provisional plank at {}:{} names {reference:?}, which does not \
+             carry @captain",
+            trace.file,
+            trace.line
+        );
+    }
+}
+
+/// Whether the `<spec>.feature:<Scenario Name>` reference names a current
+/// spec scenario that still carries the `@captain` tag. A promoted
+/// scenario (no tag) or a discarded one (no scenario) is red: the
+/// Planking agreement owes the one a real plank and the other removal.
+fn reference_captain_tagged(reference: &str) -> bool {
+    let Some((spec, name)) = reference.split_once(".feature:") else {
+        return false;
+    };
+    let spec = format!("{spec}.feature");
+    let Ok(raw) = std::fs::read_to_string(&spec) else {
+        return false;
+    };
+    // Gherkin-light scan: tags sit on the lines just above the
+    // `Scenario:`/`Scenario Outline:` marker, indented at most as far.
+    let lines: Vec<&str> = raw.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        let Some(scenario_name) = trimmed
+            .strip_prefix("Scenario:")
+            .or_else(|| trimmed.strip_prefix("Scenario Outline:"))
+            .map(str::trim)
+        else {
+            continue;
+        };
+        if scenario_name != name {
+            continue;
+        }
+        for above in lines[..index].iter().rev() {
+            let above_trimmed = above.trim_start();
+            if above_trimmed.starts_with('@') {
+                if above_trimmed
+                    .split_whitespace()
+                    .any(|tag| tag == "@captain")
+                {
+                    return true;
+                }
+                continue;
+            }
+            // The tag block ends at the first non-tag line above the
+            // scenario: blank line, step, or feature header.
+            break;
+        }
+        return false;
+    }
+    false
+}
+
+/// Patterns the inverse join holds out of the plank obligation besides
+/// the setup steps: the harness-assertion steps of the conformance
+/// scenarios themselves, whose behaviour the verification support
+/// carries and the implementation tree never serves. Setup and
+/// assertion steps are exempt per the Planking agreement: verification
+/// support carries no planks, and a `Given` step states starting state.
+const HARNESS_ONLY_PATTERNS: &[&str] = &[
+    "the watchbill file at {string} when present",
+    "the verifier reads every watch object",
+    "every key matches {string} with only a {string} array",
+    "every reference follows the {string} form",
+    "an absent watchbill conforms as the deck at rest",
+    "the implementation directory {string}",
+    "the verifier searches every source file for the token {string}",
+    "no match is found",
+    "the step definitions at {string}",
+    "the verifier joins every plank against the step patterns",
+    "every plank string matches a step pattern",
+    "every plank token sits in a declaration docblock",
+    "every provisional plank names a scenario that still carries @captain",
+    "every behaviour-bearing pattern is named by at least one plank",
+    "the verifier reads the coverage report",
+    "the measured line coverage exceeds {string}",
+    "the schema file is {string}",
+    "the startup output is read",
+];
+
+#[then("every behaviour-bearing pattern is named by at least one plank")]
+fn behaviour_patterns_carry_planks(world: &mut FingerWorld) {
+    let mut unplanked = Vec::new();
+    for (keyword, pattern) in &world.step_bindings {
+        // A `Given` binding sets up starting state in the verification
+        // support, and the harness-assertion steps above check the
+        // harness itself: neither carries implementation behaviour.
+        if *keyword == "given" || HARNESS_ONLY_PATTERNS.contains(&pattern.as_str()) {
+            continue;
+        }
+        let planked = world.plank_traces.iter().any(|trace| {
+            trace
+                .pattern
+                .as_ref()
+                .is_some_and(|payload| payload == pattern)
+        });
+        if !planked {
+            unplanked.push(pattern.clone());
+        }
+    }
+    assert!(
+        unplanked.is_empty(),
+        "behaviour-bearing step patterns named by no plank: {unplanked:#?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// HarborConformance: the coverage run measures the implementation
+// ---------------------------------------------------------------------------
+
+/// Where the coverage-scoped cucumber run writes its JSON report.
+const COVERAGE_REPORT: &str = "target/coverage-scenario.json";
+
+#[given(expr = "the coverage command runs against the {string} implementation")]
+fn coverage_command_runs(world: &mut FingerWorld, dir: String) {
+    assert!(
+        Path::new(&dir).is_dir(),
+        "implementation directory {dir} is not present"
+    );
+    // Run the coverage-scoped cucumber suite through cargo-llvm-cov, so
+    // the check exercises the RIGGING.md coverage command's own path:
+    // its binary resolution and profile plumbing, end to end. The
+    // nested run excludes the coverage scenario itself (it cannot run
+    // inside its own coverage run), the captain skeletons, and the
+    // environment-fixture scenario the suite's own filter excludes.
+    let json =
+        std::fs::canonicalize(COVERAGE_REPORT).unwrap_or_else(|_| PathBuf::from(COVERAGE_REPORT));
+    let _ = std::fs::remove_file(&json);
+    let status = Command::new("cargo")
+        .arg("llvm-cov")
+        .arg("--test")
+        .arg("cucumber")
+        .arg("--json")
+        .arg("--output-path")
+        .arg(&json)
+        .env("THIMBL_CUKE_JSON", &json)
+        .env(
+            "CUCUMBER_FILTER_TAGS",
+            "not @empty-comment-fixture and not @coverage-self",
+        )
+        .env_remove("LLVM_PROFILE_FILE")
+        .output()
+        .expect("run cargo llvm-cov");
+    if !status.status.success() {
+        panic!(
+            "coverage run failed:\n{}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+    world.coverage_report = Some(json);
+    world.coverage_dir = Some(dir);
+}
+
+#[when("the verifier reads the coverage report")]
+fn read_coverage_report(world: &mut FingerWorld) {
+    let json = world
+        .coverage_report
+        .clone()
+        .expect("the coverage command has run");
+    let dir = world
+        .coverage_dir
+        .clone()
+        .expect("the implementation directory was given");
+    assert!(
+        json.is_file(),
+        "coverage run wrote no report at {}",
+        json.display()
+    );
+    let raw = std::fs::read_to_string(&json).expect("read coverage report");
+    let report: serde_json::Value = serde_json::from_str(&raw).expect("coverage report JSON");
+    // The measured implementation is every covered source file under
+    // the implementation directory. Percent is the covered lines over
+    // the total of those files, the number `cargo llvm-cov` prints per
+    // file.
+    let mut covered = 0;
+    let mut total = 0;
+    let Some(files) = report["data"][0]["files"].as_array() else {
+        panic!("coverage report has no data[0].files array");
+    };
+    for file in files {
+        let name = file["filename"].as_str().unwrap_or_default();
+        if !name.contains(&format!("/{dir}/")) {
+            continue;
+        }
+        let summary = &file["summary"];
+        covered += summary["lines"]["covered"].as_u64().unwrap_or(0);
+        total += summary["lines"]["count"].as_u64().unwrap_or(0);
+    }
+    assert!(total > 0, "coverage report measured no lines under {dir}");
+    let percent = covered as f64 / total as f64;
+    world.coverage_percent = Some(percent);
+}
+
+#[then(expr = "the measured line coverage exceeds {string}")]
+fn coverage_exceeds(world: &mut FingerWorld, floor: String) {
+    let percent = world
+        .coverage_percent
+        .expect("the coverage report was read");
+    let floor: f64 = floor
+        .parse()
+        .unwrap_or_else(|err| panic!("coverage floor {floor:?}: {err}"));
+    assert!(
+        percent > floor,
+        "measured line coverage {percent:.2}% does not exceed {floor}"
+    );
 }

@@ -71,6 +71,8 @@ const HOST: &str = "127.0.0.1";
 /// server down cleanly. Only an atomic store runs inside the signal handler.
 static TERMINATED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
 
+/// @planks("thimbl runs with {string}")
+/// @planks("it exits with code {int}")
 /// @planks("thimbl runs with no subcommand")
 /// @planks("it exits non-zero")
 /// @planks("the finger server is started with the serve command on port 0")
@@ -131,6 +133,8 @@ fn usage() {
 /// @planks("thimbl init runs again")
 /// @planks("thimbl init runs with {string}")
 /// @planks("thimbl init has run")
+/// @planks("^\\\"\\$HOME/\\.local/share/thimbl\\\" contains the card files$")
+/// @planks("the init output names the state file replaced")
 /// @planks("the init run exits with code {int}")
 /// @planks("the init output names the state directory")
 /// Establishes the card state directory from the home dot-files: each
@@ -389,6 +393,11 @@ fn port_from_args() -> Result<u16, String> {
     Ok(port)
 }
 
+/// @planks("it contains the bound address and port")
+/// @planks("a client connects and sends nothing")
+/// @planks("another client queries the user's login name")
+/// @planks("no client connects for 2 seconds")
+/// @planks("the server process uses less than {float} CPU-seconds over that window")
 /// @planks("the finger server is started on port 0")
 /// @planks("the process receives the signal SIGTERM")
 /// @planks("the process exits within one second with code {int}")
@@ -647,6 +656,9 @@ impl Finger {
             || self.identity.real_name.eq_ignore_ascii_case(target)
     }
 
+    /// @planks("the response contains the login, real name, directory and shell")
+    /// @planks("the response conforms to the {string} schema")
+    /// @planks("the other client receives the full card")
     /// @planks("the response contains (?:a|an) "([^"]+)" line with (?:the )?(?:"([^"]+)"|(.+))")
     /// @planks("every line of the response ends with CRLF")
     /// @planks("the stdio answer contains the user's identity line")
@@ -662,6 +674,7 @@ impl Finger {
         card
     }
 
+    /// @planks("the response contains a {string} line with the current user")
     /// @planks("the state directory user is changed to {string}")
     /// The resolved identity of the card: the state directory's `.user`
     /// file (read live, trimmed), then the passwd comment field, then
@@ -688,6 +701,8 @@ impl Finger {
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     }
 
+    /// @planks("the state directory plan is changed to {string}")
+    /// @planks("the response contains a {string} section with the current plan")
     /// @planks("the response contains a {string} section with {string}")
     /// @planks("the response contains the project content {string}")
     /// @planks("the response contains the plan content {string}")

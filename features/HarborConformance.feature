@@ -24,3 +24,17 @@ Feature: Harbor methodology conformance
     When the verifier joins every plank against the step patterns
     Then every plank string matches a step pattern
     And every plank token sits in a declaration docblock
+    And every provisional plank names a scenario that still carries @captain
+
+  @conformance @coverage-self
+  Scenario: The coverage run measures the implementation
+    Given the coverage command runs against the "src" implementation
+    When the verifier reads the coverage report
+    Then the measured line coverage exceeds "0"
+
+  @conformance
+  Scenario: Every behaviour-bearing step pattern carries a plank
+    Given the implementation directory "src"
+    And the step definitions at "tests/cucumber/definitions.rs"
+    When the verifier joins every plank against the step patterns
+    Then every behaviour-bearing pattern is named by at least one plank
