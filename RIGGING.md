@@ -12,12 +12,12 @@
 ## Commands
 - discover: none
 - focused: `ref="{scenario}"; CUCUMBER_FILTER_TAGS="not @captain and not @shipwright" cargo test --test cucumber -- --name "^${ref#*:}$"`
-- broad: `CUCUMBER_FILTER_TAGS="not @captain and not @shipwright" cargo test --test cucumber`
-- coverage: `CUCUMBER_FILTER_TAGS="not @captain and not @shipwright" cargo llvm-cov --test cucumber`
+- broad: `CUCUMBER_FILTER_TAGS="not @empty-comment-fixture and not @captain and not @shipwright" cargo test --test cucumber`
+- coverage: `CUCUMBER_FILTER_TAGS="not @empty-comment-fixture and not @captain and not @shipwright" cargo llvm-cov --test cucumber`
 - step-usage: none
-- plank-inventory: none
+- plank-inventory: `rg -n '@planks' src`
 - typecheck: `cargo check`
-- lint: `cargo clippy --all-targets --quiet && cargo fmt --check`
+- lint: `npx --no-install gplint features && cargo clippy --all-targets --quiet && cargo fmt --check`
 - conformance: none
 ## Perturbation
 - message: `PERTURBATION: consider current durable context; remove when fixed`

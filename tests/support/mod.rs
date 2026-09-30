@@ -33,6 +33,10 @@ pub fn shutdown(world: &mut FingerWorld) {
     world.plan_edit = None;
     world.user_edit = None;
     world.files.user = None;
+    world.stdio_answer = None;
+    world.step_definition_path = None;
+    world.plank_traces.clear();
+    world.step_patterns.clear();
     if let Some(server) = world.server.as_mut() {
         server.terminate();
     }
@@ -99,6 +103,18 @@ pub struct FixtureFiles {
     pub user: Option<String>,
 }
 
+/// One `@planks` token the conformance join found in the implementation
+/// tree: the payload string when the annotation carries one, the file
+/// and line it sits on, and whether it sits in a docblock attached to a
+/// declaration.
+#[derive(Clone, Debug)]
+pub struct PlankTrace {
+    pub pattern: Option<String>,
+    pub file: String,
+    pub line: usize,
+    pub in_declaration_docblock: bool,
+}
+
 /// Per-scenario world: identity, temp HOME fixtures, the server process and
 /// the last response captured from a query.
 #[derive(Debug, Default, cucumber::World)]
@@ -140,6 +156,15 @@ pub struct FingerWorld {
     /// The outside file a home dot-file symlink points at when a scenario
     /// stages "a symlink to elsewhere".
     pub plan_elsewhere: Option<PathBuf>,
+    /// The stdout answer of the last stdio serve (`serve --stdio`).
+    pub stdio_answer: Option<String>,
+    /// Step definitions file the plank-join scenario reads.
+    pub step_definition_path: Option<String>,
+    /// Plank tokens the plank-join scan found under the implementation
+    /// directory, with payload and location.
+    pub plank_traces: Vec<PlankTrace>,
+    /// Step patterns the step definitions file binds, as declared.
+    pub step_patterns: Vec<String>,
 }
 
 /// A running thimbl server process and the port it bound.
@@ -531,6 +556,57 @@ impl FingerWorld {
                 LIVENESS_DEADLINE.as_secs()
             )
         })
+    }
+
+    /// One stdio serve: runs `thimbl serve --stdio` against the temp
+    /// HOME with `query` (plus the CRLF terminator a finger client
+    /// sends) on stdin, waits for the answer-and-exit cycle, and
+    /// captures the stdout answer, the combined process output, and the
+    /// exit status (in `run_exit`, which the `it exits with code` steps
+    /// read). A serve that never exits fails here with the deadline;
+    /// the exit code itself is the scenario's to assert.
+    pub fn serve_stdio(&mut self, query: &str) {
+        let home = self.temp_home();
+        let mut cmd = Command::new(server_binary());
+        cmd.env("HOME", &home).args(["serve", "--stdio"]);
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let mut child = cmd.spawn().expect("spawn thimbl stdio serve");
+        let mut stdin = child.stdin.take().expect("stdio serve stdin piped");
+        stdin.write_all(query.as_bytes()).expect("send stdio query");
+        stdin
+            .write_all(b"\r\n")
+            .expect("send stdio query terminator");
+        stdin.flush().expect("flush stdio query");
+        // Closing stdin ends the query; a stdio serve answers and exits.
+        drop(stdin);
+        let deadline = Instant::now() + LIVENESS_DEADLINE;
+        loop {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                panic!(
+                    "thimbl serve --stdio did not exit within {} seconds",
+                    LIVENESS_DEADLINE.as_secs()
+                );
+            }
+            if let Some(status) = child.try_wait().expect("wait on the thimbl stdio serve") {
+                let out = child
+                    .wait_with_output()
+                    .expect("collect stdio serve output");
+                self.run_exit = status.code();
+                let mut merged = String::from_utf8_lossy(&out.stdout).into_owned();
+                merged.push_str(&String::from_utf8_lossy(&out.stderr));
+                self.stdio_answer = Some(String::from_utf8_lossy(&out.stdout).into_owned());
+                assert!(
+                    status.success(),
+                    "thimbl serve --stdio did not answer and exit 0: {}",
+                    self.run_output.as_deref().unwrap_or_default()
+                );
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// Makes one card file (`.project`/`.plan`) in the HOME root a

@@ -23,3 +23,18 @@ Feature: Finger command line
     When thimbl runs with "init --help"
     Then it exits with code 0
     And the output names the init command
+
+  Scenario: An invalid port argument is refused
+    When thimbl runs with "serve --port nope"
+    Then it exits with code 2
+    And the output names the serve command
+
+  Scenario: An unknown subcommand is refused
+    When thimbl runs with "frobnicate"
+    Then it exits with code 2
+    And the output names the serve command
+
+  Scenario: An unknown init argument is refused
+    When thimbl runs with "init --bogus"
+    Then it exits with code 2
+    And the output names the init command

@@ -7,6 +7,8 @@
 //! forwarding refusal, overlong-query refusal, connection closed after
 //! answer).
 
+use crate::support::FingerWorld;
+use crate::support::PlankTrace;
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -14,7 +16,6 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::support::FingerWorld;
 use cucumber::{given, then, when};
 
 // ---------------------------------------------------------------------------
@@ -1378,4 +1379,271 @@ fn server_running_when(world: &mut FingerWorld) {
 fn server_started_serve_command(world: &mut FingerWorld) {
     let port = world.start_server(Some("0"));
     let _ = port;
+}
+
+// ---------------------------------------------------------------------------
+// FingerStdio: per-connection stdio serving
+// ---------------------------------------------------------------------------
+
+/// A FingerStdio query argument names the invoking user's login in
+/// words ("the user's login name") or carries the query text itself.
+fn stdio_query_text(world: &mut FingerWorld, query: String) -> String {
+    if query == "the user's login name" {
+        world.identity().login.clone()
+    } else {
+        query
+    }
+}
+
+#[when(expr = "thimbl serves stdio with the query {string}")]
+fn stdio_query(world: &mut FingerWorld, query: String) {
+    let text = stdio_query_text(world, query);
+    world.serve_stdio(&text);
+}
+
+#[when("thimbl serves stdio with the query of 600 characters")]
+fn stdio_overlong_query(world: &mut FingerWorld) {
+    let long = "a".repeat(600);
+    world.serve_stdio(&long);
+}
+
+/// The captured stdout answer of the last stdio serve.
+fn stdio_answer_text(world: &mut FingerWorld) -> String {
+    world
+        .stdio_answer
+        .clone()
+        .expect("a stdio serve was made and its answer captured")
+}
+
+#[then("the stdio answer contains the user's identity line")]
+fn stdio_identity_line(world: &mut FingerWorld) {
+    let line = expected_user_line(world);
+    let text = stdio_answer_text(world);
+    assert!(
+        text.contains(&line),
+        "stdio answer missing identity line {line:?}: {text:?}"
+    );
+}
+
+#[then(expr = "the stdio answer contains the project content {string}")]
+fn stdio_project_content(world: &mut FingerWorld, content: String) {
+    let text = stdio_answer_text(world);
+    assert!(
+        text.contains(&content),
+        "stdio answer missing project content {content:?}: {text:?}"
+    );
+}
+
+#[then(expr = "the stdio answer contains the plan content {string}")]
+fn stdio_plan_content(world: &mut FingerWorld, content: String) {
+    let text = stdio_answer_text(world);
+    assert!(
+        text.contains(&content),
+        "stdio answer missing plan content {content:?}: {text:?}"
+    );
+}
+
+#[then(expr = "the stdio answer does not contain {string}")]
+fn stdio_not_contains(world: &mut FingerWorld, needle: String) {
+    let text = stdio_answer_text(world);
+    assert!(
+        !text.contains(&needle),
+        "stdio answer must not contain {needle:?}: {text:?}"
+    );
+}
+
+#[then(expr = "the stdio answer contains {string}")]
+fn stdio_contains(world: &mut FingerWorld, needle: String) {
+    let text = stdio_answer_text(world);
+    assert!(
+        text.contains(&needle),
+        "stdio answer missing {needle:?}: {text:?}"
+    );
+}
+
+#[then(expr = "the stdio answer states that the user was not found")]
+fn stdio_no_match(world: &mut FingerWorld) {
+    let text = stdio_answer_text(world);
+    let lowered = text.to_lowercase();
+    assert!(
+        lowered.contains("not found") || lowered.contains("no such user"),
+        "stdio answer does not state the user was not found: {text:?}"
+    );
+    assert!(
+        !text.contains("ghostuser:"),
+        "no-match answer must not present a card for the unknown user"
+    );
+}
+
+#[then(expr = "it exits with the code {int}")]
+fn stdio_exit_zero(world: &mut FingerWorld, code: i64) {
+    assert_eq!(
+        world.run_exit_code(),
+        code as i32,
+        "the stdio serve exited with the wrong code: {}",
+        world.run_output_text()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// HarborConformance: the plank join
+// ---------------------------------------------------------------------------
+
+/// The payload of one `@planks(...)` annotation line, `Some` when the
+/// line carries a plank token: the payload string for a docblock
+/// annotation, and `None` for a token outside a docblock, so the form
+/// check reports the out-of-docblock token itself. A payload with no
+/// closing parenthesis is carried as it stands: it names no current
+/// pattern and reddens the join.
+fn plank_payload(line: &str) -> Option<Option<String>> {
+    let trimmed = line.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("///") {
+        let rest = rest.trim_start().strip_prefix("@planks(")?;
+        let payload = rest.strip_suffix(')').unwrap_or(rest);
+        return Some(Some(payload.trim().trim_matches('"').to_string()));
+    }
+    if trimmed.contains("@planks(") {
+        return Some(None);
+    }
+    None
+}
+
+/// Whether the docblock line at `offset` attaches to a declaration:
+/// scanning forward, docblock lines and attributes keep the block
+/// attached, and the first other line must be a declaration.
+fn docblock_attaches(source: &str, offset: usize) -> bool {
+    for line in source.lines().skip(offset + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("///") || trimmed.starts_with("#[") {
+            continue;
+        }
+        return trimmed.starts_with("fn ")
+            || trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("pub(crate) fn ")
+            || trimmed.starts_with("struct ")
+            || trimmed.starts_with("impl ")
+            || trimmed.starts_with("static ")
+            || trimmed.starts_with("const ")
+            || trimmed.starts_with("enum ");
+    }
+    false
+}
+
+/// Parses the step patterns from the step-definitions file: the string
+/// literal of every `#[given(...)]`, `#[when(...)]`, `#[then(...)]`
+/// binding, exactly as each attribute declares it. Every binding in the
+/// file sits on one line, so the parse is line-by-line and a pattern
+/// containing bracket characters cannot corrupt the scan.
+fn parse_step_patterns(source: &str) -> Vec<String> {
+    let mut patterns = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let Some(head) = ["given", "when", "then"]
+            .iter()
+            .find_map(|keyword| trimmed.strip_prefix(&format!("#[{keyword}(")))
+        else {
+            continue;
+        };
+        let head = head
+            .strip_prefix("expr = ")
+            .or_else(|| head.strip_prefix("regex = "))
+            .unwrap_or(head);
+        if let Some(pattern) = attribute_string_literal(head) {
+            patterns.push(pattern);
+        }
+    }
+    patterns
+}
+
+/// The string literal at the head of a step-binding attribute: a raw
+/// `r#"..."#` literal verbatim, or a quoted literal carrying its
+/// escapes exactly as written.
+fn attribute_string_literal(head: &str) -> Option<String> {
+    if let Some(raw) = head.strip_prefix("r#\"") {
+        let end = raw.find("\"#")?;
+        return Some(raw[..end].to_string());
+    }
+    let rest = head.strip_prefix('"')?;
+    let mut value = String::new();
+    let mut chars = rest.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => return Some(value),
+            '\\' => {
+                value.push(ch);
+                value.push(chars.next()?);
+            }
+            _ => value.push(ch),
+        }
+    }
+    None
+}
+
+#[given(expr = "the step definitions at {string}")]
+fn step_definitions_at(world: &mut FingerWorld, path: String) {
+    assert!(
+        Path::new(&path).is_file(),
+        "step definitions file {path} is not present"
+    );
+    world.step_definition_path = Some(path);
+}
+
+#[when("the verifier joins every plank against the step patterns")]
+fn join_planks_against_steps(world: &mut FingerWorld) {
+    let definitions_path = world
+        .step_definition_path
+        .clone()
+        .expect("a step definitions file was given");
+    let source = std::fs::read_to_string(&definitions_path)
+        .unwrap_or_else(|err| panic!("read {definitions_path}: {err}"));
+    world.step_patterns = parse_step_patterns(&source);
+    assert!(
+        !world.step_patterns.is_empty(),
+        "no step patterns parsed from {definitions_path}"
+    );
+    let mut sources = Vec::new();
+    collect_rs_sources(Path::new(SRC_DIR), &mut sources);
+    assert!(!sources.is_empty(), "no source files found under {SRC_DIR}");
+    let mut traces = Vec::new();
+    for file in sources {
+        let content =
+            std::fs::read_to_string(&file).unwrap_or_else(|err| panic!("read {file}: {err}"));
+        for (offset, line) in content.lines().enumerate() {
+            if let Some(payload) = plank_payload(line) {
+                traces.push(PlankTrace {
+                    pattern: payload,
+                    file: file.clone(),
+                    line: offset + 1,
+                    in_declaration_docblock: docblock_attaches(&content, offset),
+                });
+            }
+        }
+    }
+    world.plank_traces = traces;
+}
+
+#[then("every plank string matches a step pattern")]
+fn every_plank_matches(world: &mut FingerWorld) {
+    for trace in &world.plank_traces {
+        let Some(pattern) = &trace.pattern else {
+            continue;
+        };
+        assert!(
+            world.step_patterns.contains(pattern),
+            "plank {pattern:?} at {}:{} names no current step pattern",
+            trace.file,
+            trace.line
+        );
+    }
+}
+
+#[then("every plank token sits in a declaration docblock")]
+fn every_plank_in_docblock(world: &mut FingerWorld) {
+    for trace in &world.plank_traces {
+        assert!(
+            trace.in_declaration_docblock,
+            "plank token at {}:{} sits outside a declaration docblock",
+            trace.file, trace.line
+        );
+    }
 }

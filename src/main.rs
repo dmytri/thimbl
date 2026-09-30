@@ -73,7 +73,6 @@ static TERMINATED: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicB
 
 /// @planks("thimbl runs with no subcommand")
 /// @planks("it exits non-zero")
-/// @planks("the output names the serve command")
 /// @planks("the finger server is started with the serve command on port 0")
 /// Dispatches the explicit command surface: `init` establishes the card
 /// state directory, `serve` serves it (also the port-parse error path),
@@ -87,6 +86,11 @@ fn main() -> ExitCode {
             usage();
             ExitCode::SUCCESS
         }
+        // Socket activation: `--stdio` serves exactly one query from
+        // stdin to stdout — no listener, no startup line — so a
+        // supervisor's per-connection unit gets its answer and a clean
+        // exit. Any other serve argument keeps the port parsing.
+        Some("serve") if env::args().skip(2).any(|arg| arg == "--stdio") => serve_stdio(),
         Some("serve") => match port_from_args() {
             Ok(port) => serve(port),
             Err(message) => {
@@ -115,6 +119,8 @@ fn main() -> ExitCode {
     }
 }
 
+/// @planks("the output names the serve command")
+/// @planks("the output names the init command")
 /// Prints the command surface, naming `serve` as the serving entry point.
 fn usage() {
     eprintln!("usage: thimbl init [--force] [--no-link]");
@@ -127,8 +133,6 @@ fn usage() {
 /// @planks("thimbl init has run")
 /// @planks("the init run exits with code {int}")
 /// @planks("the init output names the state directory")
-/// @planks("the state directory has the user content from the passwd comment")
-/// @planks("the state directory has the user content {string}")
 /// Establishes the card state directory from the home dot-files: each
 /// card file's state directory copy is seeded from the home dot-file
 /// when missing (empty when the home has none), never overwritten when
@@ -182,6 +186,8 @@ fn init_state_dir() -> ExitCode {
     }
 }
 
+/// @planks("the state directory has the user content from the passwd comment")
+/// @planks("the state directory has the user content {string}")
 /// Seeds the state directory's `.user` identity file from the passwd
 /// comment field's first comma segment, falling back to the login, when
 /// the file is missing; an existing `.user` is never overwritten. The
@@ -524,10 +530,13 @@ fn handle_connection(mut stream: TcpStream, finger: &Finger, peer: SocketAddr) {
 }
 
 /// @planks("a client connects and sends a query of 600 characters")
-/// Reads one query line, cut at the first LF with a single trailing CR
-/// stripped, tolerating clients that close without a terminator. Returns
-/// `None` when the line exceeds [`MAX_QUERY_BYTES`].
-fn read_query(stream: &mut TcpStream) -> io::Result<Option<String>> {
+/// @planks("thimbl serves stdio with the query {string}")
+/// @planks("thimbl serves stdio with the query of 600 characters")
+/// Reads one query line from any byte source (a TCP connection or the
+/// stdio serve's stdin), cut at the first LF with a single trailing CR
+/// stripped, tolerating clients that close without a terminator.
+/// Returns `None` when the line exceeds [`MAX_QUERY_BYTES`].
+fn read_query(stream: &mut impl Read) -> io::Result<Option<String>> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 512];
     loop {
@@ -551,6 +560,39 @@ fn read_query(stream: &mut TcpStream) -> io::Result<Option<String>> {
         buf.pop();
     }
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+}
+
+/// @planks("thimbl serves stdio with the query {string}")
+/// @planks("thimbl serves stdio with the query of 600 characters")
+/// @planks("the stdio answer contains the user's identity line")
+/// @planks("the stdio answer contains the project content {string}")
+/// @planks("the stdio answer contains the plan content {string}")
+/// @planks("the stdio answer does not contain {string}")
+/// @planks("the stdio answer contains {string}")
+/// @planks("the stdio answer states that the user was not found")
+/// @planks("it exits with the code {int}")
+/// One connection of socket-activated serving: answers a single query
+/// read from stdin to stdout, reusing the [`Finger`] answer logic, then
+/// returns success so the supervisor's per-connection unit ends cleanly.
+/// Nothing is printed at startup: the answer is the only stdout output.
+fn serve_stdio() -> ExitCode {
+    let finger = Finger::current();
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+    let reply = match read_query(&mut input) {
+        Ok(Some(query)) => finger.answer(&query),
+        // The same refusal a TCP connection gets for an overlong line.
+        Ok(None) => format!("finger: query too long{CRLF}"),
+        Err(err) => {
+            eprintln!("thimbl: cannot read the stdio query: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(err) = io::stdout().write_all(reply.as_bytes()) {
+        eprintln!("thimbl: cannot write the stdio answer: {err}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }
 
 /// Everything the server serves: one identity plus the state directory
@@ -579,6 +621,10 @@ impl Finger {
     /// @planks("a client connects and sends the user's real name")
     /// @planks("the response contains the user's login and real name")
     /// @planks("the response states that the user was not found")
+    /// @planks("thimbl serves stdio with the query {string}")
+    /// @planks("thimbl serves stdio with the query of 600 characters")
+    /// @planks("the stdio answer contains {string}")
+    /// @planks("the stdio answer states that the user was not found")
     /// Answers one query line: the local card for an empty query or a
     /// match on login/real name, the forwarding refusal, or the no-match
     /// notice. `/W` is accepted and ignored.
@@ -601,8 +647,11 @@ impl Finger {
             || self.identity.real_name.eq_ignore_ascii_case(target)
     }
 
-    /// @planks("the response contains (?:a|an) \"([^\"]+)\" line with (?:the )?(?:\"([^\"]+)\"|(.+))")
+    /// @planks("the response contains (?:a|an) "([^"]+)" line with (?:the )?(?:"([^"]+)"|(.+))")
     /// @planks("every line of the response ends with CRLF")
+    /// @planks("the stdio answer contains the user's identity line")
+    /// @planks("the stdio answer contains the project content {string}")
+    /// @planks("the stdio answer contains the plan content {string}")
     /// The finger(1) long format: one identity line naming the resolved
     /// user, then the Project and Plan sections, read from the state
     /// directory at call time.
@@ -613,6 +662,7 @@ impl Finger {
         card
     }
 
+    /// @planks("the state directory user is changed to {string}")
     /// The resolved identity of the card: the state directory's `.user`
     /// file (read live, trimmed), then the passwd comment field, then
     /// the login; an empty value falls through to the next source.
@@ -629,6 +679,7 @@ impl Finger {
             .unwrap_or_default()
     }
 
+    /// @planks("the state directory has a user file with content {string}")
     /// The `.user` file content from the state directory, read per query
     /// and trimmed; `None` when the file is missing or blank.
     fn user_file_identity(&self) -> Option<String> {

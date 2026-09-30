@@ -36,3 +36,17 @@ Binding behaviour lives in `.feature` specs and referenced `assets/**`. History 
 - Public-face flip (field recommendation, needs operator ruling + deployment caveats): thimbl public (one card, no enumeration), fingerd stays loopback-only on 79. Caveats now in README: binary outside $HOME, bind source outside masked home, .plan/.project names. Cage unit checked into repo = backlog candidate.
 - Harbour debts (next fitting-out-grade harbour): verification-conformance rule set; plank-inventory/step-usage slots (plank join currently a read); planted-red proof for the tier-tag arm of the watchbill conformance check; coverage re-measure (0% instrument).
 - Backlog: client finger (second pass), multi-user/global mode, per-query identity liveness (spec first). Content catalog declined until client exists.
+
+## Harbour 3 (2026-09-30)
+
+ Shipwright ran (base fe27fbd): rigging refit (broad/coverage now exclude @empty-comment-fixture; lint chains gplint first; plank-inventory = rg token search), 4 seams planked (usage, seed_user_file, Finger::identity, Finger::user_file_identity), 47/47 tier green, real coverage measured once at 86.8% lines.
+
+ Operator rulings this session: promote all 3 CLI refusal scenarios (exit 2 pinned), promote plank-form conformance scenario, remove the 4 orphaned step definitions (2 are retired card-format leftovers).
+
+ Watchbill carries 3 watches: focused CLI trio (proven green once, focused greens at current hash owe QM), plank-form scenario (steps undefined, QM authors), then @logic sweep (proves the whole deck post-refit).
+
+ Standing blockers for QM, from Shipwright evidence: coverage reports 0% because server_binary() spawns target/<profile>/thimbl, uninstrumented; clean fix = honour CARGO_LLVM_COV_TARGET_DIR or a THIMBL_BIN override, then simplify the coverage command. A verification-conformance rule set is still absent (no engine derivable; conformance: none).
+
+## Voyage 9 (2026-09-30): serve --stdio
+
+ Operator ruled: `thimbl serve --stdio` serves the finger protocol over stdin/stdout, one query per process, exit 0. Per-connection socket activation (inetd / systemd socket unit Accept=yes StandardInput=socket); NOT fd-passing LISTEN_FDS. Specs in features/FingerStdio.feature (6 scenarios), watchbill watch3, focused red confirmed: 6 scenarios 6 failed, "Step doesn't match any function" (12 of 18 steps bind existing patterns: identity line, project/plan content, no-match, forwarding refusal, query-too-long, exit code, "does not contain"). Startup-line regression pinned: stdio stdout must never carry "listening on". Usage error must stay on stderr (unpinned explicitly; QM should keep stdout = protocol only).
